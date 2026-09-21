@@ -1,12 +1,14 @@
 //! pwfx -- a patchbay for the `pw_*` filter nodes.
 //!
-//! The shape of the program is one loop repeated at three levels, and nothing
+//! The shape of the program is one loop repeated at four levels, and nothing
 //! else:
 //!
 //! ```text
 //!   AppState          what the user asked for          (src/state.rs)
 //!      | Engine::apply
 //!   processes         one filter binary per stage      (src/process.rs)
+//!      | PwCmd::SetNodes
+//!   bus nodes         one null sink per bus            (src/pwthread.rs)
 //!      | PwCmd::SetLinks
 //!   links             resolved by name, every tick     (src/pwthread.rs)
 //! ```
@@ -42,8 +44,8 @@ use engine::Engine;
 use graph::{Dir, Mapping};
 use plugin::ParamKind;
 use process::ProcEvent;
-use pwthread::{PwCmd, PwEvent};
-use state::{Chain, Endpoint, Stage};
+use pwthread::{NodeSpec, PwCmd, PwEvent};
+use state::{Bus, BusKind, Chain, Endpoint, Stage};
 
 slint::include_modules!();
 
@@ -61,10 +63,22 @@ enum AppEvent {
     Pw(PwEvent),
 }
 
+/// Which of the two lists on the left the detail pane is showing. They are
+/// different things -- a chain is processes and links, a bus is one node --
+/// but only one of them is being looked at at a time.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum Focus {
+    #[default]
+    Chain,
+    Bus,
+}
+
 /// What is being looked at, as opposed to what is being run.
 #[derive(Default)]
 struct View {
+    focus: Focus,
     selected: usize,
+    selected_bus: usize,
     /// `node.name` for each entry of the endpoint pickers, parallel to the
     /// strings the window shows. Entry 0 is "none" and is empty.
     source_nodes: Vec<String>,
@@ -90,6 +104,7 @@ struct App {
     /// link last moved.
     links: Rc<Cell<(usize, usize)>>,
     last_links: Rc<RefCell<Vec<pwthread::LinkSpec>>>,
+    last_nodes: Rc<RefCell<Vec<NodeSpec>>>,
 }
 
 fn main() {
@@ -145,6 +160,7 @@ fn main() {
         models: Rc::new(RefCell::new(Models::default())),
         links: Rc::new(Cell::new((0, 0))),
         last_links: Rc::new(RefCell::new(Vec::new())),
+        last_nodes: Rc::new(RefCell::new(Vec::new())),
     };
 
     app.wire(&win);
@@ -157,11 +173,16 @@ fn main() {
     win.run().expect("the event loop failed");
 
     // Leaving: stop the filters before the links, so the graph never sees a
-    // node disappear out from under a link it is still carrying.
+    // node disappear out from under a link it is still carrying. The buses go
+    // last, for the same reason and one level up -- and they would go anyway
+    // when the PipeWire thread drops its proxies, so this is only about the
+    // order it happens in.
     app.save_session();
     app.last_links.borrow_mut().clear();
     app.pw.send(PwCmd::SetLinks(Vec::new()));
     app.engine.borrow_mut().shutdown();
+    app.last_nodes.borrow_mut().clear();
+    app.pw.send(PwCmd::SetNodes(Vec::new()));
 }
 
 impl App {
@@ -246,13 +267,20 @@ impl App {
         timer
     }
 
-    /// Reconcile the processes, and publish the links the state implies.
+    /// Reconcile the processes, and publish the buses and the links the state
+    /// implies.
     ///
-    /// The link set is only sent when it has actually moved: dragging a
-    /// slider reconciles processes twenty times a second and would otherwise
-    /// wake the PipeWire thread just as often to be told nothing changed.
+    /// Each set is only sent when it has actually moved: dragging a slider
+    /// reconciles processes twenty times a second and would otherwise wake
+    /// the PipeWire thread just as often to be told nothing changed. The
+    /// buses go first, so that a chain and the bus it was just pointed at
+    /// cannot arrive in the wrong order.
     fn apply(&self) {
-        let links = self.engine.borrow_mut().apply();
+        let (nodes, links) = self.engine.borrow_mut().apply();
+        if *self.last_nodes.borrow() != nodes {
+            *self.last_nodes.borrow_mut() = nodes.clone();
+            self.pw.send(PwCmd::SetNodes(nodes));
+        }
         if *self.last_links.borrow() != links {
             *self.last_links.borrow_mut() = links.clone();
             self.pw.send(PwCmd::SetLinks(links));
@@ -288,11 +316,20 @@ impl App {
             .flat_map(|c| c.stages.iter().map(move |s| c.node_name(s)))
             .filter(|n| e.runtime(n).is_some_and(|r| r.running))
             .count();
+        let buses = e.state.buses.iter().filter(|b| b.enabled).count();
+        let live = e
+            .state
+            .buses
+            .iter()
+            .filter(|b| b.enabled && e.graph.node(&b.node_name()).is_some())
+            .count();
         format!(
-            "{} node{} in the graph · {running} filter{} running · {made}/{wanted} link{} up",
+            "{} node{} in the graph · {running} filter{} running · \
+             {live}/{buses} bus{} up · {made}/{wanted} link{} up",
             e.graph.nodes.len(),
             plural(e.graph.nodes.len()),
             plural(running),
+            if buses == 1 { "" } else { "es" },
             plural(wanted),
         )
     }
@@ -309,7 +346,18 @@ impl App {
         if v.selected >= e.state.chains.len() {
             v.selected = e.state.chains.len().saturating_sub(1);
         }
-        let selected = e.state.chains.get(v.selected);
+        if v.selected_bus >= e.state.buses.len() {
+            v.selected_bus = e.state.buses.len().saturating_sub(1);
+        }
+        // Only one of the two panes is showing, and which one is what the
+        // user last clicked in. The other list keeps its place but loses its
+        // highlight, so it is obvious which selection the pane belongs to.
+        let selected = (v.focus == Focus::Chain)
+            .then(|| e.state.chains.get(v.selected))
+            .flatten();
+        let bus = (v.focus == Focus::Bus)
+            .then(|| e.state.buses.get(v.selected_bus))
+            .flatten();
 
         // --- the chain list ---
         let chains: Vec<ChainRow> = e
@@ -341,6 +389,69 @@ impl App {
         }
         win.set_selected(if selected.is_some() { v.selected as i32 } else { -1 });
         win.set_has_chain(selected.is_some());
+
+        // --- the bus list ---
+        let buses: Vec<BusRow> = e
+            .state
+            .buses
+            .iter()
+            .map(|b| BusRow {
+                id: b.id.as_str().into(),
+                name: b.name.as_str().into(),
+                enabled: b.enabled,
+                detail: bus_detail(b).into(),
+                // Asked for, the daemon is there, and yet it is not in the
+                // graph: something refused to make it, and the log says what.
+                problem: b.enabled && e.graph.connected && e.graph.node(&b.node_name()).is_none(),
+            })
+            .collect();
+        let key: Vec<String> = buses
+            .iter()
+            .map(|b| format!("{}|{}|{}|{}|{}", b.id, b.name, b.enabled, b.detail, b.problem))
+            .collect();
+        if m.buses_key != key {
+            win.set_buses(ModelRc::new(VecModel::from(buses)));
+            m.buses_key = key;
+        }
+        win.set_bus_selected(if bus.is_some() { v.selected_bus as i32 } else { -1 });
+        win.set_has_bus(bus.is_some());
+
+        // --- the selected bus ---
+        if let Some(b) = bus {
+            win.set_bus_name(b.name.as_str().into());
+            win.set_bus_enabled(b.enabled);
+            win.set_bus_node_name(b.node_name().into());
+            win.set_bus_explain(b.kind.explain().into());
+            win.set_bus_live(e.graph.node(&b.node_name()).is_some());
+            win.set_bus_status(bus_status(&e, b).into());
+
+            let kinds: Vec<String> = BusKind::ALL.iter().map(|k| k.label().to_string()).collect();
+            if m.bus_kinds_key != kinds {
+                win.set_bus_kind_options(strings(&kinds));
+                m.bus_kinds_key = kinds;
+            }
+            win.set_bus_kind_index(
+                BusKind::ALL.iter().position(|k| *k == b.kind).unwrap_or(0) as i32,
+            );
+
+            let widths: Vec<String> = (1..=b.width.max(8)).map(ui::width_label).collect();
+            win.set_bus_width_options(strings(&widths));
+            win.set_bus_width_index(b.width as i32 - 1);
+
+            let uses: Vec<BusUseRow> = e
+                .bus_uses(b)
+                .into_iter()
+                .map(|(chain, into)| BusUseRow {
+                    chain: chain.as_str().into(),
+                    direction: if into {
+                        "sends into this bus".into()
+                    } else {
+                        "takes audio from this bus".into()
+                    },
+                })
+                .collect();
+            win.set_bus_uses(ModelRc::new(VecModel::from(uses)));
+        }
 
         // --- plugins available to add ---
         let plugins: Vec<String> = e
@@ -387,6 +498,10 @@ impl App {
             if !m.shape.is_empty() {
                 m.clear(&win);
             }
+            // The matrix belongs to a chain's endpoint, so it cannot be open
+            // over the bus pane or over an empty one. Saying so here as well
+            // as at the end matters because this path returns early.
+            win.set_map_open(false);
             return;
         };
 
@@ -576,6 +691,8 @@ struct Models {
     params: Vec<Rc<VecModel<ParamRow>>>,
     levels: Option<Rc<VecModel<LevelRow>>>,
     chains_key: Vec<String>,
+    buses_key: Vec<String>,
+    bus_kinds_key: Vec<String>,
     source_key: Vec<String>,
     sink_key: Vec<String>,
     plugins_key: Vec<String>,
@@ -712,6 +829,40 @@ fn chain_detail(c: &Chain) -> String {
     )
 }
 
+fn bus_detail(b: &Bus) -> String {
+    let width = match b.width {
+        1 => "mono".to_string(),
+        2 => "stereo".to_string(),
+        n => format!("{n} ch"),
+    };
+    let kind = match b.kind {
+        BusKind::Source => "source",
+        BusKind::Sink => "sink",
+    };
+    format!("{width} · {kind}")
+}
+
+/// Whether the bus is actually there, in the terms that tell the user what to
+/// do about it if it is not.
+fn bus_status(e: &Engine, b: &Bus) -> String {
+    if !b.enabled {
+        return "off — no other application can see it".into();
+    }
+    if !e.graph.connected {
+        return "waiting for PipeWire".into();
+    }
+    match e.graph.node(&b.node_name()) {
+        Some(n) => format!(
+            "live · {} input{}, {} output{}",
+            n.inputs().len(),
+            plural(n.inputs().len()),
+            n.outputs().len(),
+            plural(n.outputs().len())
+        ),
+        None => "asking the daemon for it…".into(),
+    }
+}
+
 fn latency_text(rt: &engine::Runtime) -> String {
     if rt.latency == 0 {
         return String::new();
@@ -741,7 +892,7 @@ fn endpoint_model(
     }];
     let mut nodes: Vec<String> = vec![String::new()];
 
-    for n in e.graph.endpoints(dir, |n| n.name.starts_with(state::PREFIX)) {
+    for n in e.graph.endpoints(dir, |n| state::is_stage_node(&n.name)) {
         let count = n.ports_for(dir).len();
         options.push(format!(
             "{}  ·  {count} ch  ·  {}",
@@ -775,7 +926,14 @@ fn endpoint_detail(
         return String::new();
     };
     if e.graph.node(&ep.node).is_none() {
-        return "waiting for the device".into();
+        // A bus is something the user can turn back on, which is worth
+        // saying rather than leaving them waiting for a device that is
+        // never coming.
+        return match e.state.bus(&ep.node) {
+            Some(b) if !b.enabled => "the bus is switched off".into(),
+            Some(_) => "waiting for the bus".into(),
+            None => "waiting for the device".into(),
+        };
     }
     let covered = (0..width)
         .filter(|ch| pairs.iter().any(|(_, c)| c == ch))
@@ -809,7 +967,10 @@ impl App {
 
         // --- chains -----------------------------------------------------
         on!(on_select_chain, |app, i| {
-            app.look(|v| v.selected = i.max(0) as usize);
+            app.look(|v| {
+                v.selected = i.max(0) as usize;
+                v.focus = Focus::Chain;
+            });
         });
 
         on!(on_add_chain, |app| {
@@ -826,6 +987,7 @@ impl App {
                     output: None,
                 });
                 v.selected = e.state.chains.len() - 1;
+                v.focus = Focus::Chain;
                 v.map = None;
             });
         });
@@ -864,6 +1026,111 @@ impl App {
                     // Channel count is a command-line parameter in the
                     // filters, so this one restarts the chain's processes.
                     c.width = (index.max(0) as usize + 1).clamp(1, 64);
+                }
+            });
+        });
+
+        // --- buses ------------------------------------------------------
+        on!(on_select_bus, |app, i| {
+            app.look(|v| {
+                v.selected_bus = i.max(0) as usize;
+                v.focus = Focus::Bus;
+                v.map = None;
+            });
+        });
+
+        on!(on_add_bus, |app| {
+            app.edit(|e, v| {
+                let name = format!("Bus {}", e.state.buses.len() + 1);
+                let id = e.state.fresh_bus_id(&name);
+                e.state.buses.push(Bus {
+                    id,
+                    name,
+                    enabled: true,
+                    width: 2,
+                    kind: BusKind::Source,
+                });
+                v.selected_bus = e.state.buses.len() - 1;
+                v.focus = Focus::Bus;
+                v.map = None;
+            });
+        });
+
+        on!(on_remove_bus, |app| {
+            app.edit(|e, v| {
+                if v.selected_bus >= e.state.buses.len() {
+                    return;
+                }
+                let gone = e.state.buses.remove(v.selected_bus);
+                let node = gone.node_name();
+                // Unplug the chains that were using it rather than leaving
+                // them pointing at a name that is no longer anything. Ids are
+                // handed out again once they are free, so a later bus with
+                // the same name would otherwise inherit these chains without
+                // anyone having asked it to.
+                let mut unplugged = 0;
+                for c in &mut e.state.chains {
+                    for end in [&mut c.input, &mut c.output] {
+                        if end.as_ref().is_some_and(|ep| ep.node == node) {
+                            *end = None;
+                            unplugged += 1;
+                        }
+                    }
+                }
+                if unplugged > 0 {
+                    e.note(
+                        format!(
+                            "removed the bus “{}”; {unplugged} chain end{} now unplugged",
+                            gone.name,
+                            plural(unplugged)
+                        ),
+                        false,
+                    );
+                }
+                v.selected_bus = v.selected_bus.saturating_sub(1);
+            });
+        });
+
+        on!(on_rename_bus, |app, name| {
+            app.edit(move |e, v| {
+                // Unlike a chain, this one is visible outside the app: it is
+                // the description other applications show in their device
+                // list, so the node is made again under the new one. The
+                // `node.name` behind it does not move, so the chains wired to
+                // the bus are undisturbed.
+                if let Some(b) = e.state.buses.get_mut(v.selected_bus) {
+                    b.name = name.to_string();
+                }
+            });
+        });
+
+        on!(on_set_bus_enabled, |app, on| {
+            app.edit(move |e, v| {
+                if let Some(b) = e.state.buses.get_mut(v.selected_bus) {
+                    b.enabled = on;
+                }
+            });
+        });
+
+        on!(on_set_bus_kind, |app, index| {
+            app.edit(move |e, v| {
+                let Some(kind) = BusKind::ALL.get(index.max(0) as usize).copied() else {
+                    return;
+                };
+                if let Some(b) = e.state.buses.get_mut(v.selected_bus) {
+                    b.kind = kind;
+                }
+            });
+        });
+
+        on!(on_set_bus_width, |app, index| {
+            app.edit(move |e, v| {
+                if let Some(b) = e.state.buses.get_mut(v.selected_bus) {
+                    // Channel count is fixed when a null sink is created, so
+                    // this is the edit that makes the node again -- and any
+                    // application streaming through it is moved off it while
+                    // that happens.
+                    b.width = (index.max(0) as usize + 1).clamp(1, 64);
                 }
             });
         });
@@ -1174,6 +1441,8 @@ impl App {
                 self.edit(move |e, v| {
                     e.state = loaded;
                     v.selected = 0;
+                    v.selected_bus = 0;
+                    v.focus = Focus::Chain;
                     v.map = None;
                 });
                 self.engine
@@ -1194,6 +1463,74 @@ fn endpoint_mut(e: &mut Engine, chain: usize, dir: Dir) -> Option<&mut Endpoint>
     match dir {
         Dir::Out => c.input.as_mut(),
         Dir::In => c.output.as_mut(),
+    }
+}
+
+/// What the two endpoint pickers offer, which is the one place a bus has to
+/// behave unlike the app's other nodes.
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+    use graph::{Graph, Node, Port};
+
+    fn node(name: &str, class: &str, dir: Dir) -> Node {
+        Node {
+            id: 1,
+            name: name.into(),
+            description: name.into(),
+            media_class: class.into(),
+            ports: vec![Port {
+                id: 2,
+                name: "p".into(),
+                channel: Some("MONO".into()),
+                dir,
+                index: 0,
+            }],
+        }
+    }
+
+    fn engine_with(nodes: Vec<Node>) -> Engine {
+        let mut e = Engine::new(Vec::new(), state::AppState::default(), Arc::new(|_| {}));
+        e.graph = Graph {
+            nodes,
+            connected: true,
+        };
+        e
+    }
+
+    #[test]
+    fn a_bus_is_offered_and_a_filter_stage_is_not() {
+        let e = engine_with(vec![
+            node("pwfx.voice.hpf", "", Dir::Out),
+            node("pwfx.bus.mic", "Audio/Source/Virtual", Dir::Out),
+            node("alsa_input.card", "Audio/Source", Dir::Out),
+        ]);
+        let (options, nodes, index) = endpoint_model(&e, Dir::Out, None);
+
+        assert_eq!(index, 0, "nothing chosen is the first entry");
+        assert_eq!(nodes[0], "", "and it stands for no endpoint at all");
+        assert!(!nodes.iter().any(|n| n == "pwfx.voice.hpf"));
+        // Buses come first, so the thing the user just made is at the top of
+        // the list rather than filed under whatever media.class it happens
+        // to carry.
+        assert_eq!(nodes[1], "pwfx.bus.mic");
+        assert!(options[1].contains("Buses"));
+        assert_eq!(nodes[2], "alsa_input.card");
+    }
+
+    #[test]
+    fn a_bus_that_is_not_in_the_graph_keeps_its_place_in_the_picker() {
+        // Switched off, or the daemon has not made it yet: a chain pointed at
+        // it must not quietly lose where it was plugged in.
+        let e = engine_with(vec![node("alsa_input.card", "Audio/Source", Dir::Out)]);
+        let saved = Endpoint {
+            node: "pwfx.bus.mic".into(),
+            label: "Podcast Mic".into(),
+            mapping: Mapping::Auto,
+        };
+        let (options, nodes, index) = endpoint_model(&e, Dir::Out, Some(&saved));
+        assert_eq!(nodes[index as usize], "pwfx.bus.mic");
+        assert!(options[index as usize].contains("Podcast Mic"));
     }
 }
 
@@ -1295,7 +1632,7 @@ mod window_tests {
         commits
     }
 
-    /// One test, three scenarios: the Slint test platform can only be
+    /// One test, four scenarios: the Slint test platform can only be
     /// installed once in a process, and its event loop wants a single thread.
     #[test]
     fn the_widgets_and_the_model_stay_in_step() {
@@ -1304,6 +1641,7 @@ mod window_tests {
             typed_then_clicked_away_is_committed().await;
             a_typed_field_still_follows_the_model().await;
             a_dropdown_follows_the_model().await;
+            the_bus_pane_comes_up_and_commits_its_name().await;
             slint::quit_event_loop().unwrap();
         })
         .unwrap();
@@ -1369,6 +1707,54 @@ mod window_tests {
             field.accessible_value().unwrap(),
             "440",
             "the field must still follow the model after being typed into"
+        );
+    }
+
+    /// The bus pane is the other half of the window and has its own name
+    /// field, so it gets the same two questions: does it lay out at all, and
+    /// does what was typed into it survive being clicked away from.
+    async fn the_bus_pane_comes_up_and_commits_its_name() {
+        let win = AppWindow::new().unwrap();
+        win.set_has_chain(false);
+        win.set_has_bus(true);
+        win.set_bus_name("Podcast Mic".into());
+        win.set_bus_enabled(true);
+        win.set_bus_node_name("pwfx.bus.mic".into());
+        win.set_bus_status("live · 2 inputs, 2 outputs".into());
+        win.set_bus_live(true);
+        win.set_bus_explain("Chains send audio into this bus.".into());
+        win.set_bus_kind_options(ModelRc::new(VecModel::from(vec![
+            SharedString::from("Source"),
+            SharedString::from("Sink"),
+        ])));
+        win.set_bus_width_options(ModelRc::new(VecModel::from(vec![SharedString::from("Stereo")])));
+        win.set_bus_uses(ModelRc::new(VecModel::from(vec![BusUseRow {
+            chain: "Voice".into(),
+            direction: "sends into this bus".into(),
+        }])));
+        show(&win);
+
+        let renames: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        win.on_rename_bus({
+            let renames = renames.clone();
+            move |name| renames.borrow_mut().push(name.to_string())
+        });
+
+        // The pane laid out far enough for its field to have a position.
+        let field = field_of(&win, "NameField::field");
+        assert_eq!(field.accessible_value().unwrap(), "Podcast Mic");
+
+        field.single_click(PointerEventButton::Left).await;
+        field.set_accessible_value("Studio Mic");
+        // Focus leaves without an Enter, which is how most renames end.
+        win.window()
+            .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(false));
+        settle(&win).await;
+
+        assert_eq!(
+            *renames.borrow(),
+            ["Studio Mic".to_string()],
+            "leaving the bus name field must commit what was typed in it"
         );
     }
 

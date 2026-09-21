@@ -17,8 +17,8 @@ Each one takes its settings from the command line, prints them on stdout at
 startup, and accepts changes on stdin while audio is flowing.
 
 There is also a desktop app, [`app/`](app/), that drives them: it finds the
-filter binaries, builds chains out of them and wires the graph up. See
-[app/README.md](app/README.md).
+filter binaries, builds chains out of them, offers virtual devices to hang
+the chains on, and wires the graph up. See [app/README.md](app/README.md).
 
 ## Build
 
@@ -168,8 +168,15 @@ linked to match. It learns each filter's parameters by parsing its `--help`,
 so a new `pw_*` program appears in it with the right knobs and no changes to
 the app. Mono and stereo are matched up automatically -- by channel name where
 the names agree, by position otherwise -- and any pairing can be overridden.
-Chains, routing and settings are saved, with named presets and a default
-state to go back to.
+
+It also makes **buses**: virtual devices that other applications on the
+machine can use. A source bus is a microphone your conferencing app records
+from; a sink bus is an output other programs play into. Any number of chains
+can share one, in either direction, so a bus is where several chains become
+one thing the rest of the system can select.
+
+Chains, buses, routing and settings are saved, with named presets and a
+default state to go back to.
 
 Full description in [app/README.md](app/README.md).
 

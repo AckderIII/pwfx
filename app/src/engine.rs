@@ -1,11 +1,12 @@
-//! Turning the saved state into running processes and wanted links.
+//! Turning the saved state into running processes, wanted buses and wanted
+//! links.
 //!
 //! The engine holds no commands, only a comparison. `apply()` looks at what
 //! `AppState` says should be running, looks at what is running, and closes the
-//! gap; then it derives the set of links that state implies and hands it to
-//! the PipeWire thread, which does the same trick one level down. Every user
-//! action is therefore "edit the state, then apply", and there is no path
-//! where the GUI and the graph can disagree about what was asked for.
+//! gap; then it derives the buses and the links that state implies and hands
+//! them to the PipeWire thread, which does the same trick one level down.
+//! Every user action is therefore "edit the state, then apply", and there is
+//! no path where the GUI and the graph can disagree about what was asked for.
 //!
 //! That is also what makes loading a preset the same operation as changing one
 //! knob: the new state is compared against the running one, the stages that
@@ -19,8 +20,8 @@ use std::time::{Duration, Instant};
 use crate::graph::{self, Dir, Graph};
 use crate::plugin::PluginDesc;
 use crate::process::{EventSink, FilterProc, ProcEvent};
-use crate::pwthread::LinkSpec;
-use crate::state::{AppState, Chain};
+use crate::pwthread::{LinkSpec, NodeSpec};
+use crate::state::{AppState, Bus, Chain};
 
 /// How often the meters report, in milliseconds, when they are on.
 const METER_MS: u32 = 80;
@@ -124,10 +125,36 @@ impl Engine {
     // reconciliation
 
     /// Bring the running processes in line with the state, and return the
-    /// links that state implies.
-    pub fn apply(&mut self) -> Vec<LinkSpec> {
+    /// buses and the links that state implies.
+    pub fn apply(&mut self) -> (Vec<NodeSpec>, Vec<LinkSpec>) {
         self.reconcile_processes();
-        self.desired_links()
+        (self.desired_nodes(), self.desired_links())
+    }
+
+    /// The bus nodes the state asks the daemon for.
+    ///
+    /// A disabled bus is simply not in the list, which is what makes turning
+    /// one off take it out of every other application's device list -- the
+    /// same edit-and-compare as everything else here.
+    fn desired_nodes(&self) -> Vec<NodeSpec> {
+        self.state.buses.iter().filter(|b| b.enabled).map(node_spec).collect()
+    }
+
+    /// The chains wired to a bus, and which way round -- `true` for a chain
+    /// that sends into it. One bus can have any number of each, which is the
+    /// point of having them.
+    pub fn bus_uses(&self, bus: &Bus) -> Vec<(String, bool)> {
+        let node = bus.node_name();
+        let mut uses = Vec::new();
+        for c in &self.state.chains {
+            if c.output.as_ref().is_some_and(|e| e.node == node) {
+                uses.push((c.name.clone(), true));
+            }
+            if c.input.as_ref().is_some_and(|e| e.node == node) {
+                uses.push((c.name.clone(), false));
+            }
+        }
+        uses
     }
 
     fn reconcile_processes(&mut self) {
@@ -477,6 +504,24 @@ impl Engine {
     }
 }
 
+/// What one bus asks the daemon for.
+///
+/// Everything here is fixed at creation, so this is also the identity the
+/// PipeWire thread compares against: change any of it and the node is
+/// destroyed and made again. That is why the name is built from the id and
+/// not from what the user typed -- a rename moves the description, which
+/// other applications show, without moving the address every chain and every
+/// hand-made link refers to.
+fn node_spec(b: &Bus) -> NodeSpec {
+    NodeSpec {
+        name: b.node_name(),
+        description: b.description(),
+        media_class: b.kind.media_class().into(),
+        position: graph::bus_channels(b.width),
+        passive: b.kind.passive(),
+    }
+}
+
 /// One filter that ought to be running, and the shape it ought to have.
 struct Want {
     node: String,
@@ -514,7 +559,7 @@ mod tests {
     use super::*;
     use crate::graph::{Mapping, Node, Port};
     use crate::plugin::parse_help;
-    use crate::state::{Endpoint, Stage};
+    use crate::state::{BusKind, Endpoint, Stage};
 
     fn plugins() -> Vec<PluginDesc> {
         ["pw_hpf", "pw_comp"]
@@ -722,6 +767,100 @@ mod tests {
         let l = show(&e.desired_links());
         assert!(l.contains(&"pwfx.voice.hpf:out_1 -> spk:p_FL".to_string()));
         assert!(!l.iter().any(|s| s.contains("ghost")));
+    }
+
+    fn bus(id: &str, kind: BusKind, width: usize) -> Bus {
+        Bus {
+            id: id.into(),
+            name: format!("{id} bus"),
+            enabled: true,
+            width,
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_bus_asks_for_a_null_sink_of_the_right_shape() {
+        let mut e = engine(vec![], vec![]);
+        e.state.buses = vec![bus("mic", BusKind::Source, 1), bus("mix", BusKind::Sink, 2)];
+
+        let (nodes, _) = e.apply();
+        assert_eq!(
+            nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(),
+            ["pwfx.bus.mic", "pwfx.bus.mix"]
+        );
+        // A source bus is offered to other applications as a microphone, and
+        // never drives the graph; a sink bus is offered as an output, and has
+        // to, because what plays into it has no clock of its own.
+        assert_eq!(nodes[0].media_class, "Audio/Source/Virtual");
+        assert!(nodes[0].passive);
+        assert_eq!(nodes[0].position, ["MONO"]);
+        assert_eq!(nodes[1].media_class, "Audio/Sink");
+        assert!(!nodes[1].passive);
+        assert_eq!(nodes[1].position, ["FL", "FR"]);
+        assert_eq!(nodes[1].description, "mix bus");
+    }
+
+    #[test]
+    fn a_bus_that_is_switched_off_is_simply_not_asked_for() {
+        let mut e = engine(vec![], vec![]);
+        e.state.buses = vec![bus("mic", BusKind::Source, 2)];
+        assert_eq!(e.apply().0.len(), 1);
+        e.state.buses[0].enabled = false;
+        assert!(e.apply().0.is_empty());
+    }
+
+    /// The point of the whole feature: a bus is a node like any other, so
+    /// several chains reach it through the ordinary endpoint machinery and
+    /// PipeWire sums what arrives.
+    #[test]
+    fn several_chains_can_share_one_bus() {
+        let mut a = chain(2, &["pw_hpf"]);
+        a.output = Some(Endpoint {
+            node: "pwfx.bus.mic".into(),
+            label: "Mic bus".into(),
+            mapping: Mapping::Auto,
+        });
+        let mut b = a.clone();
+        b.id = "other".into();
+        b.name = "Other".into();
+
+        let mut e = engine(
+            vec![a, b],
+            vec![
+                device("mic", Dir::Out, &["FL", "FR"]),
+                // What the daemon makes of the spec above: inputs the chains
+                // feed, and a monitor other applications record from.
+                Node {
+                    media_class: "Audio/Source/Virtual".into(),
+                    ..device("pwfx.bus.mic", Dir::In, &["FL", "FR"])
+                },
+            ],
+        );
+        e.state.buses = vec![bus("mic", BusKind::Source, 2)];
+
+        let links = show(&e.desired_links());
+        assert!(links.contains(&"pwfx.voice.hpf:out_1 -> pwfx.bus.mic:p_FL".to_string()));
+        assert!(links.contains(&"pwfx.other.hpf:out_2 -> pwfx.bus.mic:p_FR".to_string()));
+
+        let uses = e.bus_uses(&e.state.buses[0]);
+        assert_eq!(uses.len(), 2);
+        assert!(uses.iter().all(|(_, into)| *into));
+    }
+
+    #[test]
+    fn a_renamed_bus_keeps_its_address_and_moves_its_description() {
+        let mut e = engine(vec![], vec![]);
+        e.state.buses = vec![bus("mic", BusKind::Source, 2)];
+        let before = e.apply().0;
+
+        e.state.buses[0].name = "Podcast mic".into();
+        let after = e.apply().0;
+        assert_eq!(after[0].name, before[0].name);
+        assert_ne!(after[0].description, before[0].description);
+        // And the spec did move, so the PipeWire thread makes the node again
+        // rather than leaving the old description in everyone's device list.
+        assert_ne!(after, before);
     }
 
     #[test]

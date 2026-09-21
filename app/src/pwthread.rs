@@ -2,12 +2,18 @@
 //!
 //! libpipewire's loop is not thread safe and its objects are not `Send`, so
 //! everything that touches it stays here: the registry, the graph model built
-//! from it, and the links the app owns. The rest of the program talks to this
-//! thread in two directions and in terms of *names* only --
+//! from it, and the nodes and links the app owns. The rest of the program
+//! talks to this thread in two directions and in terms of *names* only --
 //!
-//!   in   `PwCmd::SetLinks`, the set of links that ought to exist, as node
+//!   in   `PwCmd::SetNodes`, the buses that ought to exist, and
+//!        `PwCmd::SetLinks`, the set of links that ought to exist, as node
 //!        and port names;
 //!   out  `PwEvent::Graph`, a snapshot of what is out there.
+//!
+//! Both are the same shape of command and are reconciled the same way: nodes
+//! first, because a link can only be made once the ports at both ends of it
+//! exist. Nothing waits for that, though -- the bus's ports arriving in the
+//! registry is what wakes the next pass, and that pass makes the link.
 //!
 //! Declaring the wanted links rather than issuing connect/disconnect calls is
 //! what makes the app survive things moving underneath it. Node ids change
@@ -18,8 +24,9 @@
 //! needs no waiting on and no retry logic: its ports appearing in the registry
 //! *is* the retry.
 //!
-//! Links are held as proxies without `object.linger`, so if this process dies
-//! the server tears them down with it and the graph is left as it was found.
+//! Nodes and links alike are held as proxies without `object.linger`, so if
+//! this process dies the server tears them down with it and the graph is left
+//! as it was found. A bus is therefore only there while the app is.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -52,7 +59,32 @@ pub struct LinkSpec {
     pub in_port: String,
 }
 
+/// One node the app asks the daemon to make for it: a bus.
+///
+/// Everything about a null audio sink is fixed when it is created -- how many
+/// channels it has, what they are called, which side of it other applications
+/// are offered -- so there is nothing to change afterwards and no live half
+/// to this. Equality is therefore the whole comparison: a spec that differs
+/// in any field is a different node, and the reconcile destroys the old one
+/// and creates the new.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NodeSpec {
+    /// `node.name`: what chains and `pw-link` address it by.
+    pub name: String,
+    /// `node.description`: what other applications show in their device list.
+    pub description: String,
+    pub media_class: String,
+    /// `audio.position`, which fixes the channel count and the port names
+    /// together.
+    pub position: Vec<String>,
+    /// Whether the node is kept from driving the graph.
+    pub passive: bool,
+}
+
 pub enum PwCmd {
+    /// The complete set of nodes the app wants to exist. Anything it owns
+    /// that is not in here is destroyed.
+    SetNodes(Vec<NodeSpec>),
     /// The complete set of links the app wants to exist. Anything it owns
     /// that is not in here is torn down.
     SetLinks(Vec<LinkSpec>),
@@ -64,6 +96,14 @@ pub enum PwEvent {
     /// How many of the wanted links are actually up, for the status line.
     Links { wanted: usize, made: usize },
     Error(String),
+}
+
+/// Everything the app has declared should exist. Held apart from any one
+/// connection, so that a daemon restart replays it rather than losing it.
+#[derive(Default)]
+struct Wanted {
+    nodes: Vec<NodeSpec>,
+    links: Vec<LinkSpec>,
 }
 
 type Emit = Rc<dyn Fn(PwEvent)>;
@@ -130,6 +170,15 @@ struct Owned {
     made: Instant,
 }
 
+/// A node this app asked the daemon to create and is responsible for.
+struct OwnedNode {
+    spec: NodeSpec,
+    /// `None` when the creation was refused. The spec is kept anyway so the
+    /// attempt is not repeated on every tick for as long as the app is open;
+    /// editing the bus or reconnecting to the daemon is what clears it.
+    proxy: Option<pw::node::Node>,
+}
+
 #[derive(Default)]
 struct State {
     nodes: HashMap<u32, NodeRec>,
@@ -137,6 +186,8 @@ struct State {
     links: HashMap<u32, (u32, u32)>,
     desired: Vec<LinkSpec>,
     owned: Vec<Owned>,
+    desired_nodes: Vec<NodeSpec>,
+    owned_nodes: Vec<OwnedNode>,
     factory: Option<String>,
 }
 
@@ -195,6 +246,63 @@ impl State {
             self.find_port(&spec.out_node, &spec.out_port, Dir::Out)?,
             self.find_port(&spec.in_node, &spec.in_port, Dir::In)?,
         ))
+    }
+}
+
+/// Reconcile the nodes this app owns with the ones it wants.
+///
+/// A plain set difference, unlike the links: a node has no ports to resolve
+/// and nothing to wait for, so what is not there is created and what is no
+/// longer asked for is destroyed. Its ports then appear in the registry,
+/// which is what brings the link reconcile back round to finish the job.
+fn reconcile_nodes(st: &mut State, core: &pw::core::CoreRc, emit: &Emit) {
+    let mut keep: Vec<OwnedNode> = Vec::with_capacity(st.owned_nodes.len());
+    for o in std::mem::take(&mut st.owned_nodes) {
+        if st.desired_nodes.contains(&o.spec) {
+            keep.push(o);
+        } else if let Some(proxy) = o.proxy {
+            let _ = core.destroy_object(proxy);
+        }
+    }
+    st.owned_nodes = keep;
+
+    for spec in st.desired_nodes.clone() {
+        if st.owned_nodes.iter().any(|o| o.spec == spec) {
+            continue;
+        }
+
+        let mut props = pw::properties::PropertiesBox::new();
+        props.insert("factory.name", "support.null-audio-sink");
+        props.insert("node.name", &*spec.name);
+        props.insert("node.description", &*spec.description);
+        props.insert("media.class", &*spec.media_class);
+        props.insert("audio.position", format!("[ {} ]", spec.position.join(", ")));
+        // The monitor has to carry what went in, not a volume-scaled copy of
+        // it: a bus that quietly changed the level of everything passing
+        // through it would be a strange thing to put in the middle of a
+        // chain of filters that are careful about exactly that.
+        props.insert("monitor.channel-volumes", "false");
+        props.insert("monitor.passthrough", "true");
+        props.insert("device.class", "sound");
+        if spec.passive {
+            props.insert("node.passive", "true");
+        }
+        // No object.linger, same as the links: a bus belongs to this process
+        // and goes when it does, rather than being left behind in the graph
+        // for someone to wonder about.
+        props.insert("object.linger", "false");
+
+        let proxy = match core.create_object::<pw::node::Node>("adapter", &*props) {
+            Ok(proxy) => Some(proxy),
+            Err(e) => {
+                emit(PwEvent::Error(format!(
+                    "cannot create the bus {}: {e}",
+                    spec.name
+                )));
+                None
+            }
+        };
+        st.owned_nodes.push(OwnedNode { spec, proxy });
     }
 }
 
@@ -279,9 +387,9 @@ fn run(rx: pw::channel::Receiver<PwCmd>, emit: Emit) {
         }
     };
 
-    // The wanted links outlive a reconnect: when the graph comes back they
-    // are simply made again.
-    let mut desired: Vec<LinkSpec> = Vec::new();
+    // What the app has declared outlives a reconnect: when the daemon comes
+    // back the buses are created again and the links made again.
+    let mut wanted = Wanted::default();
     let mut rx = Some(rx);
 
     loop {
@@ -290,13 +398,13 @@ fn run(rx: pw::channel::Receiver<PwCmd>, emit: Emit) {
             .and_then(|ctx| ctx.connect_rc(None).ok());
 
         let (next_rx, quit) = match core {
-            Some(core) => session(&mainloop, &core, rx.take().unwrap(), &mut desired, &emit),
+            Some(core) => session(&mainloop, &core, rx.take().unwrap(), &mut wanted, &emit),
             None => {
                 emit(PwEvent::Error(
                     "no PipeWire daemon; retrying every two seconds".into(),
                 ));
                 emit(PwEvent::Graph(Graph::default()));
-                idle(&mainloop, rx.take().unwrap(), &mut desired, RETRY)
+                idle(&mainloop, rx.take().unwrap(), &mut wanted, RETRY)
             }
         };
         rx = Some(next_rx);
@@ -312,22 +420,23 @@ fn session(
     mainloop: &pw::main_loop::MainLoopRc,
     core: &pw::core::CoreRc,
     rx: pw::channel::Receiver<PwCmd>,
-    desired: &mut Vec<LinkSpec>,
+    wanted: &mut Wanted,
     emit: &Emit,
 ) -> (pw::channel::Receiver<PwCmd>, bool) {
     let registry = match core.get_registry_rc() {
         Ok(r) => r,
         Err(e) => {
             emit(PwEvent::Error(format!("no registry: {e}")));
-            return idle(mainloop, rx, desired, RETRY);
+            return idle(mainloop, rx, wanted, RETRY);
         }
     };
 
     let st = Rc::new(RefCell::new(State {
-        desired: std::mem::take(desired),
+        desired: std::mem::take(&mut wanted.links),
+        desired_nodes: std::mem::take(&mut wanted.nodes),
         ..State::default()
     }));
-    // Two flags, not one. The graph changing and the wanted links changing
+    // Two flags, not one. The graph changing and what the app wants changing
     // both need a reconcile, but only the first is news to the window --
     // and telling it otherwise would be a loop, since what the window does
     // with a new graph is work out the links again and send them back.
@@ -347,6 +456,9 @@ fn session(
                 return;
             }
             let mut st = st.borrow_mut();
+            // Nodes first: a link into a bus can only be made once the bus
+            // has ports, and this is the pass that gives it them.
+            reconcile_nodes(&mut st, &core, &emit);
             reconcile(&mut st, &core, &emit);
             if graph {
                 emit(PwEvent::Graph(st.snapshot()));
@@ -407,6 +519,10 @@ fn session(
                 st.borrow_mut().desired = links;
                 links_moved.set(true);
             }
+            PwCmd::SetNodes(nodes) => {
+                st.borrow_mut().desired_nodes = nodes;
+                links_moved.set(true);
+            }
             PwCmd::Quit => {
                 quit.set(true);
                 mainloop.quit();
@@ -418,18 +534,25 @@ fn session(
     let rx = attached.deattach();
 
     let mut st = st.borrow_mut();
-    *desired = std::mem::take(&mut st.desired);
+    wanted.links = std::mem::take(&mut st.desired);
+    wanted.nodes = std::mem::take(&mut st.desired_nodes);
     // Tearing the proxies down explicitly keeps the server from having to
-    // notice this client vanish while it is still connected.
+    // notice this client vanish while it is still connected. Links before
+    // nodes, so nothing is carrying audio out of a bus as it goes.
     for o in std::mem::take(&mut st.owned) {
         let _ = core.destroy_object(o.proxy);
+    }
+    for o in std::mem::take(&mut st.owned_nodes) {
+        if let Some(proxy) = o.proxy {
+            let _ = core.destroy_object(proxy);
+        }
     }
     drop(st);
 
     let quit = quit.get();
     if !quit {
         emit(PwEvent::Graph(Graph::default()));
-        return idle(mainloop, rx, desired, RETRY);
+        return idle(mainloop, rx, wanted, RETRY);
     }
     (rx, true)
 }
@@ -510,11 +633,12 @@ fn take_global(
 fn idle(
     mainloop: &pw::main_loop::MainLoopRc,
     rx: pw::channel::Receiver<PwCmd>,
-    desired: &mut Vec<LinkSpec>,
+    wanted: &mut Wanted,
     delay: Duration,
 ) -> (pw::channel::Receiver<PwCmd>, bool) {
     let quit = Rc::new(Cell::new(false));
-    let pending: Rc<RefCell<Option<Vec<LinkSpec>>>> = Rc::new(RefCell::new(None));
+    let pending: Rc<RefCell<Wanted>> = Rc::new(RefCell::new(Wanted::default()));
+    let moved = Rc::new(Cell::new((false, false)));
 
     let timer = mainloop.loop_().add_timer({
         let weak = mainloop.downgrade();
@@ -528,8 +652,16 @@ fn idle(
 
     let attached = rx.attach(mainloop.loop_(), {
         let (quit, pending, mainloop) = (quit.clone(), pending.clone(), mainloop.clone());
+        let moved = moved.clone();
         move |cmd| match cmd {
-            PwCmd::SetLinks(links) => *pending.borrow_mut() = Some(links),
+            PwCmd::SetLinks(links) => {
+                pending.borrow_mut().links = links;
+                moved.set((moved.get().0, true));
+            }
+            PwCmd::SetNodes(nodes) => {
+                pending.borrow_mut().nodes = nodes;
+                moved.set((true, moved.get().1));
+            }
             PwCmd::Quit => {
                 quit.set(true);
                 mainloop.quit();
@@ -539,8 +671,15 @@ fn idle(
     mainloop.run();
     let rx = attached.deattach();
 
-    if let Some(l) = pending.borrow_mut().take() {
-        *desired = l;
+    // Only what actually arrived replaces what is held: an app that edited a
+    // chain while the daemon was away must not lose its buses with it.
+    let (nodes_moved, links_moved) = moved.get();
+    let mut pending = pending.borrow_mut();
+    if nodes_moved {
+        wanted.nodes = std::mem::take(&mut pending.nodes);
+    }
+    if links_moved {
+        wanted.links = std::mem::take(&mut pending.links);
     }
     (rx, quit.get())
 }

@@ -1,10 +1,11 @@
-//! What the app remembers: the chains, and where they are plugged in.
+//! What the app remembers: the chains, the buses, and where they are plugged
+//! in.
 //!
 //! This is the whole user-visible model and the whole save file. Everything
-//! else in the program is derived from it -- which processes run, which links
-//! exist, what the window shows -- so saving and restoring is just writing
-//! this out and reading it back, and there is no second place a setting could
-//! hide.
+//! else in the program is derived from it -- which processes run, which nodes
+//! the app asks the daemon for, which links exist, what the window shows --
+//! so saving and restoring is just writing this out and reading it back, and
+//! there is no second place a setting could hide.
 //!
 //! Endpoints are stored by `node.name` rather than by id because ids are
 //! reassigned every time a device is replugged or a profile changes, whereas
@@ -64,11 +65,112 @@ pub struct Chain {
     pub output: Option<Endpoint>,
 }
 
+/// What a bus is to everything outside this app.
+///
+/// Both kinds are the same object underneath -- a null audio sink, whose
+/// input ports turn up again on its monitor -- so both have ports at each
+/// end and either can be picked at either end of a chain. What `media.class`
+/// decides is which side the session manager offers to *other* applications,
+/// and that is the whole difference between them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BusKind {
+    /// A virtual microphone. Chains feed its input; other applications
+    /// record from it.
+    #[default]
+    Source,
+    /// A virtual speaker. Other applications play into it; chains take the
+    /// audio off its monitor.
+    Sink,
+}
+
+impl BusKind {
+    pub const ALL: [BusKind; 2] = [BusKind::Source, BusKind::Sink];
+
+    pub fn media_class(self) -> &'static str {
+        match self {
+            // `/Virtual` is what keeps it out of the list of real capture
+            // devices while still offering it as one to record from.
+            BusKind::Source => "Audio/Source/Virtual",
+            BusKind::Sink => "Audio/Sink",
+        }
+    }
+
+    /// Whether the node is allowed to drive the graph.
+    ///
+    /// A source bus never is: something always feeds it -- a chain, and
+    /// behind that a real capture device -- and that is what should be
+    /// setting the clock. A sink bus is the other way round: an application
+    /// playing into it has no clock of its own, so the bus has to be the one
+    /// providing it.
+    pub fn passive(self) -> bool {
+        self == BusKind::Source
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BusKind::Source => "Source — applications record from it",
+            BusKind::Sink => "Sink — applications play into it",
+        }
+    }
+
+    /// The sentence shown under the picker, in the bus's own terms.
+    pub fn explain(self) -> &'static str {
+        match self {
+            BusKind::Source => "Chains send audio into this bus. \
+                Other applications see it as a microphone and record from it.",
+            BusKind::Sink => "Other applications see this bus as an output and play into it. \
+                Chains take the audio back off it.",
+        }
+    }
+}
+
+/// A virtual device the app asks the daemon to create for it.
+///
+/// It is not a process and it is not a filter: it is one node with N inputs
+/// and N outputs, so several chains can feed one bus and several chains can
+/// take from it. What that is *for* is giving third-party applications a
+/// fixed name to record from or play into, whatever the chains behind it are
+/// doing this week.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Bus {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    pub width: usize,
+    #[serde(default)]
+    pub kind: BusKind,
+}
+
+impl Bus {
+    /// The `node.name` the bus appears in the graph under.
+    ///
+    /// Built from the id, never from the display name, for the same reason a
+    /// stage's is: it is what every chain's endpoint and every hand-made
+    /// `pw-link` refers to, and renaming a bus must not break them.
+    pub fn node_name(&self) -> String {
+        format!("{BUS_PREFIX}{}", self.id)
+    }
+
+    /// What other applications put in their device list. The name is the
+    /// whole point of a bus, so unlike the node name this one does follow
+    /// what the user typed.
+    pub fn description(&self) -> String {
+        match self.name.trim() {
+            "" => self.node_name(),
+            n => n.to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
     pub version: u32,
     #[serde(default)]
     pub chains: Vec<Chain>,
+    #[serde(default)]
+    pub buses: Vec<Bus>,
     /// Metering costs a line pair per stage per interval on stdout and a scan
     /// per block in the filter, so it is switchable.
     #[serde(default = "yes")]
@@ -84,6 +186,7 @@ impl Default for AppState {
         Self {
             version: FORMAT_VERSION,
             chains: Vec::new(),
+            buses: Vec::new(),
             meters: true,
         }
     }
@@ -92,8 +195,21 @@ impl Default for AppState {
 impl AppState {
     /// A chain id that is not in use, derived from the name so that node
     /// names in the graph are recognisable.
+    ///
+    /// `bus` is never handed out, because a chain by that name would put its
+    /// stages at `pwfx.bus.<stage>` -- exactly where the buses live.
     pub fn fresh_chain_id(&self, name: &str) -> String {
-        unique(&slug(name), |c| self.chains.iter().any(|x| x.id == c))
+        unique(&slug(name), |c| {
+            c == BUS_SEGMENT || self.chains.iter().any(|x| x.id == c)
+        })
+    }
+
+    pub fn fresh_bus_id(&self, name: &str) -> String {
+        unique(&slug(name), |c| self.buses.iter().any(|x| x.id == c))
+    }
+
+    pub fn bus(&self, node: &str) -> Option<&Bus> {
+        self.buses.iter().find(|b| b.node_name() == node)
     }
 }
 
@@ -122,6 +238,23 @@ pub fn node_name(chain_id: &str, stage_id: &str) -> String {
 
 /// What marks a node in the graph as belonging to this app.
 pub const PREFIX: &str = "pwfx.";
+
+/// And what marks one of those as a bus rather than a filter stage. Buses
+/// are the app's own nodes but they are also endpoints, so this is the line
+/// the pickers draw: stages are hidden, buses are offered.
+pub const BUS_PREFIX: &str = "pwfx.bus.";
+
+const BUS_SEGMENT: &str = "bus";
+
+/// Whether a node in the graph is one of this app's filter stages.
+///
+/// That is the one class of node the endpoint pickers hide: a chain fed from
+/// another chain's stage would be wiring round the app's back. A bus carries
+/// the same prefix and is the exact opposite -- it exists to be picked, at
+/// either end, by this app and by everything else on the machine.
+pub fn is_stage_node(name: &str) -> bool {
+    name.starts_with(PREFIX) && !name.starts_with(BUS_PREFIX)
+}
 
 /// Node names travel through PipeWire properties and end up in `pw-link`
 /// output, so keep them to something that can be typed.
@@ -289,6 +422,57 @@ mod tests {
     }
 
     #[test]
+    fn bus_ids_do_not_collide_and_stay_out_of_the_chains_way() {
+        let mut st = AppState::default();
+        for _ in 0..2 {
+            let id = st.fresh_bus_id("Mic Bus");
+            st.buses.push(Bus {
+                id,
+                name: "Mic Bus".into(),
+                enabled: true,
+                width: 2,
+                kind: BusKind::Source,
+            });
+        }
+        let ids: Vec<&str> = st.buses.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["mic-bus", "mic-bus-2"]);
+        assert_eq!(st.buses[0].node_name(), "pwfx.bus.mic-bus");
+        assert_eq!(st.bus("pwfx.bus.mic-bus-2").map(|b| b.name.as_str()), Some("Mic Bus"));
+
+        // A chain called "Bus" would otherwise name its stages into the same
+        // space the buses live in.
+        assert_eq!(st.fresh_chain_id("Bus"), "bus-2");
+    }
+
+    #[test]
+    fn the_pickers_hide_stages_and_offer_buses() {
+        assert!(is_stage_node("pwfx.voice.hpf"));
+        assert!(is_stage_node("pwfx.bus-2.hpf")); // a chain called "Bus 2"
+        assert!(!is_stage_node("pwfx.bus.mic"));
+        assert!(!is_stage_node("alsa_output.pci-0000_03_00.1.hdmi-stereo"));
+        assert!(!is_stage_node("MyMic"));
+    }
+
+    #[test]
+    fn a_bus_keeps_its_node_name_when_it_is_renamed() {
+        let mut b = Bus {
+            id: "talk".into(),
+            name: "Talkback".into(),
+            enabled: true,
+            width: 1,
+            kind: BusKind::Source,
+        };
+        let node = b.node_name();
+        b.name = "Studio talkback".into();
+        assert_eq!(b.node_name(), node);
+        // The description does follow, because that is what other
+        // applications show in their device list.
+        assert_eq!(b.description(), "Studio talkback");
+        b.name = "  ".into();
+        assert_eq!(b.description(), "pwfx.bus.talk");
+    }
+
+    #[test]
     fn node_names_follow_the_stage_not_its_position() {
         let mut c = Chain {
             id: "voice".into(),
@@ -339,6 +523,13 @@ mod tests {
                 }),
                 output: None,
             }],
+            buses: vec![Bus {
+                id: "mic".into(),
+                name: "Mic Bus".into(),
+                enabled: true,
+                width: 2,
+                kind: BusKind::Sink,
+            }],
         };
         let text = serde_json::to_string(&st).unwrap();
         assert_eq!(serde_json::from_str::<AppState>(&text).unwrap(), st);
@@ -351,5 +542,13 @@ mod tests {
         assert!(st.meters);
         assert!(st.chains[0].enabled);
         assert!(st.chains[0].stages.is_empty());
+        assert!(st.buses.is_empty());
+
+        // And one written before the kind had a name defaults to the one a
+        // bus is usually made for.
+        let text = r#"{"version":1,"buses":[{"id":"b","name":"B","width":2}]}"#;
+        let st: AppState = serde_json::from_str(text).unwrap();
+        assert_eq!(st.buses[0].kind, BusKind::Source);
+        assert!(st.buses[0].enabled);
     }
 }

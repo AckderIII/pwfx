@@ -150,8 +150,9 @@ Deliberate, to suit a one-value-per-line protocol — preserve them:
 
 ## The app (`app/`)
 
-`pwfx`: chains of these filters, wired into the graph. Rust, Slint, one
-binary. Its own README has the detail; what matters when changing either side:
+`pwfx`: chains of these filters, plus the buses they hang on, wired into the
+graph. Rust, Slint, one binary. Its own README has the detail; what matters
+when changing either side:
 
 **It learns the filters from `--help`, not from a table.** `app/src/plugin.rs`
 parses the output of `print_param_help()` in `src/pwf.c` back into a parameter
@@ -175,10 +176,35 @@ what makes an unplugged interface, a crashed filter and a restarted daemon
 ordinary rather than special. A change that resolves a name once and caches the
 id breaks all three.
 
-**Three reconcile loops, no commands anywhere.** State -> processes ->
-links, each closing the gap between what is and what should be. Adding a
-feature means adding to the state and to what the comparison derives from it,
-not adding an action that does something.
+**Four reconcile loops, no commands anywhere.** State -> processes -> bus
+nodes -> links, each closing the gap between what is and what should be.
+Adding a feature means adding to the state and to what the comparison derives
+from it, not adding an action that does something. `PwCmd::SetNodes` is
+`SetLinks` one level up: the complete set of nodes that ought to exist, not a
+create or a destroy.
+
+**A bus is one node, not a process.** `app/src/pwthread.rs` asks the daemon
+for a `support.null-audio-sink` through the `adapter` factory, whose input
+ports turn up again on its monitor -- so both kinds of bus have ports at both
+ends and either can sit at either end of a chain. `media.class` is the whole
+difference: `Audio/Source/Virtual` offers it to other applications as a
+microphone, `Audio/Sink` as an output. A source bus is `node.passive` because
+something always feeds it; a sink bus is not, because what plays into it has
+no clock of its own. Everything about a null sink is fixed at creation, so
+`NodeSpec` equality *is* the comparison -- a changed width, kind or
+description destroys the node and makes it again.
+
+Two naming rules follow, and they pull in opposite directions on purpose:
+
+- A bus's `node.name` is `pwfx.bus.<id>` and never moves. It is what every
+  chain endpoint and every hand-written `pw-link` refers to.
+- Its `node.description` is what the user typed, because that is what other
+  applications show. Renaming a bus therefore *does* remake the node, which
+  is the opposite of renaming a chain -- and that asymmetry is the point.
+
+`pwfx.bus.` is also the line the endpoint pickers draw: filter stages are
+hidden from them, buses are offered at the top of both. `fresh_chain_id`
+refuses to hand out `bus` so a chain cannot name its stages into that space.
 
 Two consequences to keep in mind:
 

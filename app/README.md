@@ -2,8 +2,8 @@
 
 A Rust/Slint desktop app that treats the filter binaries in `../bin` as
 plugins. It shows every source and sink on the system, lets you build any
-number of filter chains out of them, and keeps the PipeWire graph wired to
-match.
+number of filter chains out of them, gives you virtual devices to hang them
+on, and keeps the PipeWire graph wired to match.
 
 ```sh
 make app          # from the top of the tree; builds the filters too
@@ -22,9 +22,17 @@ make app          # from the top of the tree; builds the filters too
 - **Chains.** A chain is a source, an ordered row of filters and a sink. Each
   stage runs as its own process, and the stages are linked in series. Stages
   can be added, removed, reordered and bypassed while audio flows.
-- **Routing.** Sources and sinks are chosen from the live graph — hardware
-  inputs and outputs, virtual devices, sink monitors and application streams.
-  A chain with no filters in it at all is a plain patch cable.
+- **Routing.** Sources and sinks are chosen from the live graph — buses,
+  hardware inputs and outputs, virtual devices, sink monitors and application
+  streams. A chain with no filters in it at all is a plain patch cable.
+- **Buses.** A bus is a virtual device the app asks the daemon for, and it is
+  what other applications on the machine talk to. A **source** bus is a
+  microphone: chains feed it, and your conferencing app records from it. A
+  **sink** bus is an output: applications play into it, and chains take the
+  audio back off it. Any number of chains can share one bus in either
+  direction — PipeWire sums what arrives — so a bus is where several chains
+  become one thing the rest of the system can select. Buses go when the app
+  does; nothing is left behind in the graph.
 - **Channels.** A chain is mono, stereo or up to 64 channels wide. Matching
   the world to it is automatic: same-named channels line up (so FL/FR find
   FL/FR whatever order the device declares them in), and anything else falls
@@ -42,12 +50,14 @@ make app          # from the top of the tree; builds the filters too
 
 ## How it is put together
 
-One loop, repeated at three levels, and nothing else:
+One loop, repeated at four levels, and nothing else:
 
 ```
   AppState          what the user asked for        src/state.rs
      │ Engine::apply
   processes         one filter binary per stage    src/process.rs
+     │ PwCmd::SetNodes
+  bus nodes         one null sink per bus          src/pwthread.rs
      │ PwCmd::SetLinks
   links             resolved by name, per tick     src/pwthread.rs
 ```
@@ -64,6 +74,7 @@ just the next comparison coming out differently:
 | a filter crashes | the next pass sees it is gone and starts it again, with backoff if it will not stay up |
 | the daemon restarts | the PipeWire thread reconnects and replays the wanted links |
 | a preset is loaded | it is compared against what is running; stages that did not change are left alone, audio and all |
+| a bus is renamed | its `node.description` moved, so the node is made again under the new one; its `node.name` did not, so the chains on it never notice |
 
 Two rules follow from the filters' own design and are worth knowing before
 changing anything here:
@@ -88,8 +99,8 @@ and names do not.
 | `src/plugin.rs` | discovers the binaries and parses `--help` into a parameter table |
 | `src/process.rs` | one running filter and the line protocol on its pipes |
 | `src/graph.rs` | the PipeWire graph as the GUI sees it, and the channel matching |
-| `src/pwthread.rs` | the PipeWire thread: registry, snapshots, link reconciliation |
-| `src/engine.rs` | state → processes → wanted links |
+| `src/pwthread.rs` | the PipeWire thread: registry, snapshots, node and link reconciliation |
+| `src/engine.rs` | state → processes → wanted buses and links |
 | `src/state.rs` | the save file, which is the whole user-visible model |
 | `src/ui.rs` | slider positions and value formatting |
 | `src/main.rs` | the window: state into models, clicks into edits |
@@ -113,12 +124,18 @@ run starts from), `presets/*.json`.
 - Changing a **lookahead** steps the filter's delay line and is audible. That
   is the filters' documented behaviour, not something this app smooths over —
   set it and leave it.
-- Chains cannot be fed from other chains. The app's own nodes are kept out of
-  the endpoint pickers, which also keeps cycles out of the graph.
-- Links are made without `object.linger`, so closing the app removes exactly
-  the links it made and leaves the rest of the graph as it found it. The
-  filter processes get `PR_SET_PDEATHSIG` as well, so they do not outlive the
-  GUI even if it is killed.
+- Chains cannot be fed from other chains directly — the filter stages are
+  kept out of the endpoint pickers — but they can be fed **through a bus**,
+  which is the supported way to join them up. Nothing stops you wiring a
+  chain's output back round to its own input through one; the app does not
+  detect cycles and PipeWire will simply refuse to run the loop.
+- Changing a bus's **width** or its **kind** makes the node again, because
+  both are fixed when a null sink is created. Any application streaming
+  through it at the time is moved off it by the session manager.
+- Links and buses alike are made without `object.linger`, so closing the app
+  removes exactly what it made and leaves the rest of the graph as it found
+  it. The filter processes get `PR_SET_PDEATHSIG` as well, so they do not
+  outlive the GUI even if it is killed.
 
 ## A trap worth knowing about
 
@@ -146,7 +163,7 @@ clamped or refused correct itself on screen.
 cargo test
 ```
 
-36 of them. Four are worth pointing at:
+48 of them. Five are worth pointing at:
 
 - `window_tests` drives the real widgets headlessly through Slint's testing
   backend — it clicks into a field, types, clicks away, and asserts the value
@@ -160,7 +177,11 @@ cargo test
   a change to the help formatter in `src/pwf.c` fails here rather than
   silently emptying the window.
 - `engine::tests` pins the exact link set each routing case should produce,
-  including mono fan-out, stereo fold-down and an absent device.
+  including mono fan-out, stereo fold-down, an absent device, and two chains
+  summing into one bus — plus the shape of the node each bus asks for.
+- `picker_tests` pins the one place a bus has to behave unlike the app's
+  other nodes: the endpoint pickers hide filter stages and offer buses,
+  although both carry the `pwfx.` prefix.
 
 ## Building without `fontconfig-devel`
 

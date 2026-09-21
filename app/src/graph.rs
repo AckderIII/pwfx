@@ -63,11 +63,17 @@ impl Node {
     }
 
     /// Where this node belongs in the endpoint picker. Ordering is the
-    /// display order: real hardware first, then virtual devices, then the
-    /// monitor taps, then applications.
+    /// display order: the app's own buses first, then real hardware, then
+    /// other virtual devices, then the monitor taps, then applications.
     pub fn kind(&self, dir: Dir) -> NodeKind {
         let c = self.media_class.as_str();
-        if c.starts_with("Stream/") {
+        if self.name.starts_with(crate::state::BUS_PREFIX) {
+            // A bus is a virtual device and a monitor tap and would be
+            // classified as either, depending on which end is being asked
+            // about. It is neither: it is the thing the user just made, and
+            // it belongs at the top of both lists.
+            NodeKind::Bus
+        } else if c.starts_with("Stream/") {
             NodeKind::Application
         } else if c.contains("Virtual") {
             NodeKind::Virtual
@@ -84,6 +90,7 @@ impl Node {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum NodeKind {
+    Bus,
     Device,
     Virtual,
     Monitor,
@@ -94,6 +101,7 @@ pub enum NodeKind {
 impl NodeKind {
     pub fn label(self) -> &'static str {
         match self {
+            NodeKind::Bus => "Buses",
             NodeKind::Device => "Devices",
             NodeKind::Virtual => "Virtual devices",
             NodeKind::Monitor => "Monitors",
@@ -147,6 +155,22 @@ pub fn chain_channels(width: usize) -> Vec<String> {
     (0..width)
         .map(|i| NAMES.get(i).map(|s| s.to_string()).unwrap_or(format!("CH{}", i + 1)))
         .collect()
+}
+
+/// `audio.position` for a bus of the given width.
+///
+/// Nearly the same list as `chain_channels`, and deliberately so -- a bus and
+/// a chain of the same width then match by name and need no mapping at all --
+/// but it has to be names SPA actually knows. Past the eight surround
+/// positions there is no such name, so the channels become `AUX0..` rather
+/// than the `CH9` a chain would call them; an adapter asked for a position it
+/// cannot parse comes up with unnamed ports instead of failing, which is the
+/// kind of wrong that is only noticed much later.
+pub fn bus_channels(width: usize) -> Vec<String> {
+    if width > 8 {
+        return (0..width).map(|i| format!("AUX{i}")).collect();
+    }
+    chain_channels(width)
 }
 
 /// Work out which source channel feeds which destination channel.
@@ -315,6 +339,37 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn a_bus_declares_channel_names_spa_knows() {
+        assert_eq!(bus_channels(1), ["MONO"]);
+        assert_eq!(bus_channels(2), ["FL", "FR"]);
+        assert_eq!(bus_channels(8), chain_channels(8));
+        // Past the surround positions a chain says CH9; SPA has no such
+        // name, so a bus says AUX8.
+        assert_eq!(chain_channels(9)[8], "CH9");
+        assert_eq!(bus_channels(9)[8], "AUX8");
+        assert_eq!(bus_channels(9)[0], "AUX0");
+    }
+
+    #[test]
+    fn a_bus_is_sorted_and_labelled_as_itself_at_both_ends() {
+        let mut n = node(&[
+            ("playback_FL", "FL", Dir::In),
+            ("monitor_FL", "FL", Dir::Out),
+        ]);
+        n.name = "pwfx.bus.mix".into();
+        n.media_class = "Audio/Sink".into();
+        // Without the prefix this is a device at one end and a monitor tap
+        // at the other; with it, it is a bus at both.
+        assert_eq!(n.kind(Dir::In), NodeKind::Bus);
+        assert_eq!(n.kind(Dir::Out), NodeKind::Bus);
+        assert!(NodeKind::Bus < NodeKind::Device);
+
+        // A filter stage is not a bus, however close the prefix looks.
+        n.name = "pwfx.voice.hpf".into();
+        assert_ne!(n.kind(Dir::In), NodeKind::Bus);
     }
 
     #[test]

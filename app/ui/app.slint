@@ -1,8 +1,9 @@
 import { Theme, Btn, Toggle, Meter } from "theme.slint";
-import { ParamRow, StageRow, ChainRow, LevelRow, MapRow, StageCard, MapDialog, NameField } from "parts.slint";
+import { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow,
+          StageCard, MapDialog, NameField, SideRow, BusPane } from "parts.slint";
 import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 
-export { ParamRow, StageRow, ChainRow, LevelRow, MapRow }
+export { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow }
 
 component Card inherits Rectangle {
     background: Theme.card;
@@ -71,6 +72,24 @@ export component AppWindow inherits Window {
     in property <[ChainRow]> chains;
     in-out property <int> selected: -1;
 
+    // --- bus list --------------------------------------------------------
+    in property <[BusRow]> buses;
+    in-out property <int> bus-selected: -1;
+
+    // --- the selected bus -------------------------------------------------
+    in property <bool> has-bus: false;
+    in property <string> bus-name;
+    in property <bool> bus-enabled;
+    in property <[string]> bus-kind-options;
+    in property <int> bus-kind-index;
+    in property <[string]> bus-width-options;
+    in property <int> bus-width-index;
+    in property <string> bus-node-name;
+    in property <string> bus-explain;
+    in property <string> bus-status;
+    in property <bool> bus-live;
+    in property <[BusUseRow]> bus-uses;
+
     // --- the selected chain ---------------------------------------------
     in property <bool> has-chain: false;
     in property <string> chain-name;
@@ -110,6 +129,14 @@ export component AppWindow inherits Window {
     in property <bool> map-auto;
     in property <[string]> map-channels;
     in property <[MapRow]> map-rows;
+
+    callback select-bus(int);
+    callback add-bus();
+    callback remove-bus();
+    callback rename-bus(string);
+    callback set-bus-enabled(bool);
+    callback set-bus-kind(int);
+    callback set-bus-width(int);
 
     callback select-chain(int);
     callback add-chain();
@@ -246,7 +273,7 @@ export component AppWindow inherits Window {
         HorizontalLayout {
             vertical-stretch: 1;
 
-            // ---------------------- chain list --------------------------
+            // ------------------ chain and bus lists ---------------------
             Rectangle {
                 width: 246px;
                 background: Theme.bg-raised;
@@ -260,53 +287,52 @@ export component AppWindow inherits Window {
                     }
 
                     ScrollView {
+                        // Twice the share of the buses, because a chain is
+                        // the thing being worked on and a bus is where it
+                        // ends up. Both still scroll on their own.
+                        vertical-stretch: 2;
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            for c[i] in root.chains : SideRow {
+                                name: c.name;
+                                detail: c.detail;
+                                enabled: c.enabled;
+                                problem: c.problem;
+                                current: i == root.selected;
+                                clicked => { root.select-chain(i); }
+                            }
+                            if root.chains.length == 0 : Text {
+                                text: "No chains yet.\n\nA chain is a source, a row of filters and a sink. Press “New” to make one.";
+                                font-size: Theme.fs-small;
+                                color: Theme.text-faint;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.line; }
+
+                    HorizontalLayout {
+                        SectionLabel { text: "BUSES"; horizontal-stretch: 1; vertical-alignment: center; }
+                        Btn { text: "+ New"; primary: true; clicked => { root.add-bus(); } }
+                    }
+
+                    ScrollView {
                         vertical-stretch: 1;
                         VerticalLayout {
                             spacing: 4px;
                             alignment: start;
-                            for c[i] in root.chains : Rectangle {
-                                height: 52px;
-                                border-radius: 6px;
-                                background: i == root.selected ? Theme.accent-dim.with-alpha(0.45)
-                                          : pick.has-hover ? Theme.card-hover : Theme.card;
-                                border-width: 1px;
-                                border-color: i == root.selected ? Theme.accent : transparent;
-
-                                HorizontalLayout {
-                                    padding: 8px;
-                                    spacing: Theme.gap;
-                                    Rectangle {
-                                        width: 6px;
-                                        height: 6px;
-                                        y: 8px;
-                                        border-radius: 3px;
-                                        background: !c.enabled ? Theme.text-faint
-                                                  : c.problem ? Theme.warn : Theme.good;
-                                    }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        Text {
-                                            text: c.name;
-                                            font-size: Theme.fs;
-                                            font-weight: 600;
-                                            color: Theme.text;
-                                            overflow: elide;
-                                        }
-                                        Text {
-                                            text: c.detail;
-                                            font-size: Theme.fs-small;
-                                            color: Theme.text-faint;
-                                            overflow: elide;
-                                        }
-                                    }
-                                }
-                                pick := TouchArea {
-                                    mouse-cursor: pointer;
-                                    clicked => { root.select-chain(i); }
-                                }
+                            for b[i] in root.buses : SideRow {
+                                name: b.name;
+                                detail: b.detail;
+                                enabled: b.enabled;
+                                problem: b.problem;
+                                current: i == root.bus-selected;
+                                clicked => { root.select-bus(i); }
                             }
-                            if root.chains.length == 0 : Text {
-                                text: "No chains yet.\n\nA chain is a source, a row of filters and a sink. Press “New” to make one.";
+                            if root.buses.length == 0 : Text {
+                                text: "A bus is a virtual device other applications can use. Chains feed it or take from it.";
                                 font-size: Theme.fs-small;
                                 color: Theme.text-faint;
                                 wrap: word-wrap;
@@ -322,13 +348,34 @@ export component AppWindow inherits Window {
                 horizontal-stretch: 1;
                 background: Theme.bg;
 
-                if !root.has-chain : Text {
-                    text: "Select a chain on the left, or make a new one.";
+                if !root.has-chain && !root.has-bus : Text {
+                    text: "Select a chain or a bus on the left, or make a new one.";
                     color: Theme.text-faint;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     width: 100%;
                     height: 100%;
+                }
+
+                if root.has-bus : ScrollView {
+                    BusPane {
+                        name: root.bus-name;
+                        enabled: root.bus-enabled;
+                        kind-options: root.bus-kind-options;
+                        kind-index: root.bus-kind-index;
+                        width-options: root.bus-width-options;
+                        width-index: root.bus-width-index;
+                        node-name: root.bus-node-name;
+                        explain: root.bus-explain;
+                        status: root.bus-status;
+                        live: root.bus-live;
+                        uses: root.bus-uses;
+                        rename(t) => { root.rename-bus(t); }
+                        set-enabled(v) => { root.set-bus-enabled(v); }
+                        set-kind(i) => { root.set-bus-kind(i); }
+                        set-width(i) => { root.set-bus-width(i); }
+                        remove => { root.remove-bus(); }
+                    }
                 }
 
                 if root.has-chain : ScrollView {

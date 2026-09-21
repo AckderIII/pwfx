@@ -52,6 +52,21 @@ export struct ChainRow {
     problem: bool,
 }
 
+export struct BusRow {
+    id: string,
+    name: string,
+    enabled: bool,
+    detail: string,
+    problem: bool,
+}
+
+// One chain hanging off a bus, and which way the audio goes. A bus with
+// several of these is the whole reason it exists.
+export struct BusUseRow {
+    chain: string,
+    direction: string,
+}
+
 export struct MapRow {
     port: string,
     channel: string,
@@ -184,6 +199,58 @@ export component NameField inherits HorizontalLayout {
         changed has-focus => {
             if (!self.has-focus) { root.commit(self.text); }
         }
+    }
+}
+
+// One row in either of the two lists on the left. A chain and a bus are
+// different things, but they are picked the same way and the eye should not
+// have to learn two shapes for "the thing I am editing".
+export component SideRow inherits Rectangle {
+    in property <string> name;
+    in property <string> detail;
+    in property <bool> enabled;
+    in property <bool> problem;
+    in property <bool> current;
+    callback clicked();
+
+    height: 52px;
+    border-radius: 6px;
+    background: root.current ? Theme.accent-dim.with-alpha(0.45)
+              : touch.has-hover ? Theme.card-hover : Theme.card;
+    border-width: 1px;
+    border-color: root.current ? Theme.accent : transparent;
+
+    HorizontalLayout {
+        padding: 8px;
+        spacing: Theme.gap;
+        Rectangle {
+            width: 6px;
+            height: 6px;
+            y: 8px;
+            border-radius: 3px;
+            background: !root.enabled ? Theme.text-faint
+                      : root.problem ? Theme.warn : Theme.good;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            Text {
+                text: root.name;
+                font-size: Theme.fs;
+                font-weight: 600;
+                color: Theme.text;
+                overflow: elide;
+            }
+            Text {
+                text: root.detail;
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                overflow: elide;
+            }
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }
 
@@ -401,6 +468,186 @@ export component StageCard inherits Rectangle {
             commit(t) => { root.commit(p.name, t); }
             pick(i) => { root.pick(p.name, i); }
             toggle(v) => { root.toggle(p.name, v); }
+        }
+    }
+}
+
+// Everything about one bus.
+//
+// A bus has no filters and no meters -- it is one node -- so what this pane
+// is mostly for is telling the user the two things they cannot see from the
+// graph: what other applications will call it, and which chains are hanging
+// off it.
+export component BusPane inherits VerticalLayout {
+    in property <string> name;
+    in property <bool> enabled;
+    in property <[string]> kind-options;
+    in property <int> kind-index;
+    in property <[string]> width-options;
+    in property <int> width-index;
+    in property <string> node-name;
+    in property <string> explain;
+    in property <string> status;
+    in property <bool> live;
+    in property <[BusUseRow]> uses;
+
+    callback rename(string);
+    callback set-enabled(bool);
+    callback set-kind(int);
+    callback set-width(int);
+    callback remove();
+
+    padding: Theme.pad;
+    spacing: Theme.gap;
+    alignment: start;
+
+    HorizontalLayout {
+        spacing: Theme.gap;
+        NameField {
+            value: root.name;
+            commit(t) => { root.rename(t); }
+        }
+        Toggle {
+            y: 5px;
+            checked: root.enabled;
+            toggled(v) => { root.set-enabled(v); }
+        }
+        Text {
+            text: root.enabled ? "on" : "off";
+            font-size: Theme.fs-small;
+            color: root.enabled ? Theme.good : Theme.text-faint;
+            vertical-alignment: center;
+            width: 30px;
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Btn {
+            text: "Delete bus";
+            danger: true;
+            clicked => { root.remove(); }
+        }
+    }
+
+    Rectangle {
+        background: Theme.card;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.line;
+        VerticalLayout {
+            padding: Theme.pad;
+            spacing: 6px;
+            Text {
+                text: "WHAT OTHER APPLICATIONS SEE";
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                letter-spacing: 0.6px;
+            }
+            HorizontalLayout {
+                spacing: Theme.gap;
+                ComboBox {
+                    horizontal-stretch: 1;
+                    model: root.kind-options;
+                    current-index: root.kind-index;
+                    selected => { root.set-kind(self.current-index); }
+                }
+                ComboBox {
+                    width: 190px;
+                    model: root.width-options;
+                    current-index: root.width-index;
+                    selected => { root.set-width(self.current-index); }
+                }
+            }
+            Text {
+                text: root.explain;
+                font-size: Theme.fs-small;
+                color: Theme.text-dim;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    Rectangle {
+        background: Theme.card;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.line;
+        VerticalLayout {
+            padding: Theme.pad;
+            spacing: 6px;
+            Text {
+                text: "IN THE GRAPH";
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                letter-spacing: 0.6px;
+            }
+            HorizontalLayout {
+                spacing: Theme.gap;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    y: 5px;
+                    border-radius: 4px;
+                    background: root.live ? Theme.good
+                              : root.enabled ? Theme.warn : Theme.text-faint;
+                }
+                Text {
+                    text: root.status;
+                    font-size: Theme.fs;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+            // The address, spelled out: this is what goes in a `pw-link`
+            // command line, and it is deliberately not the name above --
+            // renaming the bus does not move it.
+            Text {
+                text: root.node-name;
+                font-family: "monospace";
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                overflow: elide;
+            }
+        }
+    }
+
+    Rectangle {
+        background: Theme.card;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.line;
+        VerticalLayout {
+            padding: Theme.pad;
+            spacing: 6px;
+            Text {
+                text: "CHAINS ON THIS BUS";
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                letter-spacing: 0.6px;
+            }
+            for u in root.uses : HorizontalLayout {
+                spacing: Theme.gap;
+                Text {
+                    text: u.chain;
+                    font-size: Theme.fs;
+                    color: Theme.text;
+                    width: 200px;
+                    overflow: elide;
+                }
+                Text {
+                    text: u.direction;
+                    font-size: Theme.fs-small;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+            }
+            if root.uses.length == 0 : Text {
+                text: "No chain is wired to this bus yet. Pick it as a chain's input or output — it is at the top of both lists.";
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                wrap: word-wrap;
+            }
         }
     }
 }
