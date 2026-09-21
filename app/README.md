@@ -157,6 +157,22 @@ widget that currently has focus, which would fight the user mid-edit. Reading
 the model back straight after committing is what makes a value the filter
 clamped or refused correct itself on screen.
 
+The dropdowns cost a second bug, because a widget does not need the user's
+help to write its own value. `ComboBoxBase::reset-current()` clamps and writes
+`current-index` **every time the model changes**, which is often here — every
+device that appears and every application that starts playing is a new entry
+in the endpoint lists, and a daemon restart empties them and fills them again.
+The write is a no-op while the clamp does not move the value, so nothing goes
+wrong for a while; the first time a list shrinks past the selection the
+dropdown comes off its binding for good and shows whatever index it kept, read
+against a list that has since grown back. A chain that was plugged in reads as
+plugged into something else, often the first entry.
+
+Every dropdown whose value belongs to the state therefore goes through
+`Picker`, which pushes the index back on `changed options` as well as on
+`changed index` — both, because the list can change while the index stays the
+same number, and that is precisely the case the widget gets wrong on its own.
+
 ## Tests
 
 ```sh
@@ -167,8 +183,10 @@ cargo test
 
 - `window_tests` drives the real widgets headlessly through Slint's testing
   backend — it clicks into a field, types, clicks away, and asserts the value
-  was committed and that the field still follows the model afterwards. This is
-  the regression test for the trap above; it fails if either half is removed.
+  was committed and that the field still follows the model afterwards; and it
+  shrinks an endpoint list past the selection and grows it back, asserting the
+  dropdown still names the right node. These are the regression tests for the
+  two traps above; each fails if its half is removed.
 - `engine::round_trip` starts a real `pw_eq`, feeds it a saved chain and
   asserts the filter reports back exactly what was asked for, then that
   adopting its report and a JSON cycle both leave the state alone. Needs a

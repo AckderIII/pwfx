@@ -181,6 +181,44 @@ component TextEditor inherits HorizontalLayout {
     }
 }
 
+// A dropdown whose value belongs to the model rather than to the widget.
+//
+// `ComboBoxBase` writes its own `current-index` in two places: `select()`,
+// when the user picks something, and `reset-current()`, which clamps it on
+// *every* model change. Either write removes the binding that was feeding it,
+// and from then on the dropdown shows an index of its own -- read against a
+// list that has since moved. The endpoint lists move constantly, because
+// every device that appears and every application that starts playing is a
+// new entry, so the symptom is a chain that is plugged in showing something
+// else, often the first entry.
+//
+// So the index is pushed back in by hand whenever either half of the pair
+// changes, and never while the user has the list open. Both handlers are
+// needed: the options can change while the index stays the same number, and
+// that is exactly the case the widget gets wrong on its own.
+export component Picker inherits HorizontalLayout {
+    in property <[string]> options;
+    in property <int> index;
+    in property <bool> enabled: true;
+    callback picked(int);
+
+    function sync() {
+        if (!box.has-focus) {
+            box.current-index = root.index;
+        }
+    }
+    changed options => { root.sync(); }
+    changed index => { root.sync(); }
+
+    box := ComboBox {
+        enabled: root.enabled;
+        horizontal-stretch: 1;
+        model: root.options;
+        current-index: root.index;
+        selected => { root.picked(self.current-index); }
+    }
+}
+
 // A single-line text field that keeps following its model after it has been
 // typed into, and that commits on the way out as well as on Enter.
 export component NameField inherits HorizontalLayout {
@@ -543,17 +581,17 @@ export component BusPane inherits VerticalLayout {
             }
             HorizontalLayout {
                 spacing: Theme.gap;
-                ComboBox {
+                Picker {
                     horizontal-stretch: 1;
-                    model: root.kind-options;
-                    current-index: root.kind-index;
-                    selected => { root.set-kind(self.current-index); }
+                    options: root.kind-options;
+                    index: root.kind-index;
+                    picked(i) => { root.set-kind(i); }
                 }
-                ComboBox {
+                Picker {
                     width: 190px;
-                    model: root.width-options;
-                    current-index: root.width-index;
-                    selected => { root.set-width(self.current-index); }
+                    options: root.width-options;
+                    index: root.width-index;
+                    picked(i) => { root.set-width(i); }
                 }
             }
             Text {

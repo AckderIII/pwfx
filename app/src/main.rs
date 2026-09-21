@@ -1641,6 +1641,7 @@ mod window_tests {
             typed_then_clicked_away_is_committed().await;
             a_typed_field_still_follows_the_model().await;
             a_dropdown_follows_the_model().await;
+            an_endpoint_picker_survives_its_list_changing().await;
             the_bus_pane_comes_up_and_commits_its_name().await;
             slint::quit_event_loop().unwrap();
         })
@@ -1707,6 +1708,70 @@ mod window_tests {
             field.accessible_value().unwrap(),
             "440",
             "the field must still follow the model after being typed into"
+        );
+    }
+
+    /// The endpoint lists move on their own: every device that appears and
+    /// every application that starts playing is a new entry, sorted into a
+    /// list the chain's own index is read against. A daemon restart empties
+    /// the list altogether and then fills it again.
+    ///
+    /// `ComboBoxBase::reset-current()` clamps and *writes* its `current-index`
+    /// whenever the model changes, and in Slint a write removes the binding
+    /// feeding that property. The write is a no-op while the clamp does not
+    /// move the value, which is why this is intermittent -- but the first
+    /// time the list shrinks past the selection the dropdown comes off its
+    /// model for good and shows whatever index it kept, read against a list
+    /// that has since grown back. `Picker` pushes the index in again.
+    async fn an_endpoint_picker_survives_its_list_changing() {
+        let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
+        // Only the source list carries device names, so whichever Picker
+        // reports one is the one under test and the order the three of them
+        // are built in does not matter.
+        win.set_width_options(strings(&["Stereo".into()]));
+        win.set_width_index(0);
+        win.set_sink_options(strings(&["\u{2014} no output \u{2014}".into()]));
+        win.set_sink_index(0);
+
+        let full = [
+            "\u{2014} no input \u{2014}".to_string(),
+            "Line In".to_string(),
+            "Webcam".to_string(),
+            "Mic".to_string(),
+        ];
+        win.set_source_options(strings(&full));
+        win.set_source_index(3);
+        show(&win);
+        settle(&win).await;
+
+        let shown = || -> Vec<String> {
+            testing::ElementHandle::find_by_element_id(&win, "Picker::box")
+                .filter_map(|e| e.accessible_value().map(|v| v.to_string()))
+                .collect()
+        };
+        assert!(shown().contains(&"Mic".to_string()), "got {:?}", shown());
+
+        // The daemon goes away: everything but the saved endpoint leaves the
+        // list, and the clamp drags the selection down with it.
+        win.set_source_options(strings(&[
+            "\u{2014} no input \u{2014}".to_string(),
+            "Mic".to_string(),
+        ]));
+        win.set_source_index(1);
+        settle(&win).await;
+        assert!(shown().contains(&"Mic".to_string()), "got {:?}", shown());
+
+        // And it comes back. This is the one the widget gets wrong on its
+        // own: it kept the index the clamp left it with and now reads it
+        // against the full list again.
+        win.set_source_options(strings(&full));
+        win.set_source_index(3);
+        settle(&win).await;
+        assert!(
+            shown().contains(&"Mic".to_string()),
+            "the picker must follow its model after the list shrank and grew \
+             back; got {:?}",
+            shown()
         );
     }
 

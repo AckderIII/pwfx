@@ -1,7 +1,7 @@
 import { Theme, Btn, Toggle, Meter } from "theme.slint";
 import { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow,
-          StageCard, MapDialog, NameField, SideRow, BusPane } from "parts.slint";
-import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+          StageCard, MapDialog, NameField, SideRow, BusPane, Picker } from "parts.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
 
 export { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow }
 
@@ -44,11 +44,11 @@ component EndpointCard inherits Card {
         }
         HorizontalLayout {
             spacing: Theme.gap;
-            ComboBox {
+            Picker {
                 horizontal-stretch: 1;
-                model: root.options;
-                current-index: root.index;
-                selected => { root.selected(self.current-index); }
+                options: root.options;
+                index: root.index;
+                picked(i) => { root.selected(i); }
             }
             Btn {
                 text: root.mapped ? "Channels ✱" : "Channels";
@@ -232,11 +232,11 @@ export component AppWindow inherits Window {
                     enabled: root.preset-name != "";
                     clicked => { root.save-preset(root.preset-name); root.preset-name = ""; }
                 }
-                ComboBox {
+                Picker {
                     width: 150px;
-                    model: root.presets;
-                    current-index: root.preset-index;
-                    selected => { root.preset-index = self.current-index; }
+                    options: root.presets;
+                    index: root.preset-index;
+                    picked(i) => { root.preset-index = i; }
                 }
                 Btn {
                     height: Theme.control;
@@ -405,14 +405,14 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                                 width: 60px;
                             }
-                            ComboBox {
+                            Picker {
                                 // Wide enough for "Stereo (2 channels)",
                                 // which is the longest `width_label` produces
                                 // -- everything above two is "N channels".
                                 width: 190px;
-                                model: root.width-options;
-                                current-index: root.width-index;
-                                selected => { root.set-width(self.current-index); }
+                                options: root.width-options;
+                                index: root.width-index;
+                                picked(i) => { root.set-width(i); }
                             }
                             Rectangle { horizontal-stretch: 1; }
                             Btn {
@@ -449,7 +449,7 @@ export component AppWindow inherits Window {
 
                         HorizontalLayout {
                             spacing: Theme.gap;
-                            ComboBox {
+                            Picker {
                                 // Takes the row rather than a width chosen
                                 // here: what is in it is `name — summary` for
                                 // whatever filters are on disk, and the
@@ -457,9 +457,9 @@ export component AppWindow inherits Window {
                                 // characters. A fixed width would only be
                                 // right until someone adds a seventh.
                                 horizontal-stretch: 1;
-                                model: root.plugin-options;
-                                current-index: root.plugin-index;
-                                selected => { root.plugin-index = self.current-index; }
+                                options: root.plugin-options;
+                                index: root.plugin-index;
+                                picked(i) => { root.plugin-index = i; }
                             }
                             Btn {
                                 text: "+ Add filter";

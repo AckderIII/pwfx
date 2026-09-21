@@ -218,3 +218,12 @@ Two consequences to keep in mind:
   model. Every editor in `ui/parts.slint` therefore commits on blur as well as
   on Enter and pushes the model back with a `changed p` handler. A new editor
   has to do both, and `window_tests` in `app/src/main.rs` fails if it does not.
+- **A widget can write its own value without the user touching it.**
+  `ComboBoxBase::reset-current()` clamps and writes `current-index` on every
+  model change, so a dropdown comes off its binding the first time its list
+  shrinks past the selection and then shows an index of its own against a list
+  that has since moved. Every dropdown whose value comes from the state goes
+  through `Picker` in `ui/parts.slint`, which pushes the index back on
+  `changed options` as well as `changed index` -- both, because the list can
+  change while the index stays the same number, and that is the case the
+  widget gets wrong. Do not use a bare `ComboBox` for a value the model owns.
