@@ -47,7 +47,18 @@ test: all refs $(REFS:%=$(BIN)/t_%)
 check: all refs $(REFS:%=$(BIN)/t_%)
 	@tests/all.sh
 
+# The GUI. Separate from `all` because it is a cargo build with its own
+# dependency tree; the filters stay buildable with nothing but a C compiler
+# and libpipewire.
+app: all
+	cd app && cargo build --release
+	@echo "built app/target/release/pwfx"
+
+app-test:
+	cd app && cargo test
+
 clean:
 	rm -rf $(BIN) $(OBJ)
+	-cd app && cargo clean
 
-.PHONY: all clean test check refs
+.PHONY: all clean test check refs app app-test

@@ -4,7 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Six audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`, `pw_limit`),
 each a standalone PipeWire filter node built on `pw_filter`, ported from the raw
-stdin/stdout reference implementations in `reference/`.
+stdin/stdout reference implementations in `reference/`; plus `app/`, a Rust and
+Slint desktop app that drives them as plugins.
 
 ## Commands
 
@@ -12,6 +13,8 @@ stdin/stdout reference implementations in `reference/`.
 make                      # build all filters into bin/
 make test                 # offline: DSP cores diffed against reference/, byte for byte
 make check                # the above plus the live PipeWire tests (needs a daemon)
+make app                  # the filters and the GUI
+make app-test             # the GUI's own tests
 make clean
 
 PWF_OFFLINE_ONLY=1 tests/all.sh      # skip everything that needs a daemon
@@ -144,3 +147,48 @@ Deliberate, to suit a one-value-per-line protocol — preserve them:
 - Sample rate is read-only and comes from the graph; there is no `-r`.
 - There is no `-b/--block`; the quantum is the graph's, requested via
   `--node-latency`.
+
+## The app (`app/`)
+
+`pwfx`: chains of these filters, wired into the graph. Rust, Slint, one
+binary. Its own README has the detail; what matters when changing either side:
+
+**It learns the filters from `--help`, not from a table.** `app/src/plugin.rs`
+parses the output of `print_param_help()` in `src/pwf.c` back into a parameter
+table -- names, ranges, units, defaults, read-only and command-line-only flags.
+A new `src/pw_X.c` therefore appears in the GUI with the right knobs and no
+Rust changes at all. **The flip side is that the help format is load-bearing.**
+`cargo test` in `app/` parses the real binaries and asserts what comes back, so
+a change to that formatter fails there rather than quietly emptying the window.
+
+**The filter stays the authority on its own values.** The app sends what the
+user asked for and then displays whatever is echoed back, so clamping,
+rounding, a rejected cross-parameter combination and the second line a changed
+`lookahead` drags with it need no modelling on the Rust side. Do not add a
+shadow copy of a parameter's value that does not come from the filter.
+
+**Links are declared, never commanded.** The GUI hands `app/src/pwthread.rs`
+the set of links that ought to exist, addressed by node and port *name*, and
+that thread re-resolves the whole set on every registry change. Ids are
+reassigned on every restart and every profile change; names are not. This is
+what makes an unplugged interface, a crashed filter and a restarted daemon
+ordinary rather than special. A change that resolves a name once and caches the
+id breaks all three.
+
+**Three reconcile loops, no commands anywhere.** State -> processes ->
+links, each closing the gap between what is and what should be. Adding a
+feature means adding to the state and to what the comparison derives from it,
+not adding an action that does something.
+
+Two consequences to keep in mind:
+
+- A chain's channel count is `--channels`, which is command line only in the
+  filters, so changing a chain's width restarts its processes. Everything else
+  is live and must stay that way.
+- The app's own nodes are named `pwfx.<chain>.<stage>` from ids, not from
+  display names, so renaming a chain does not restart it. Keep it that way.
+- The std widgets own their value: typing into a `LineEdit` or dragging a
+  `Slider` writes the property, which removes the binding feeding it from the
+  model. Every editor in `ui/parts.slint` therefore commits on blur as well as
+  on Enter and pushes the model back with a `changed p` handler. A new editor
+  has to do both, and `window_tests` in `app/src/main.rs` fails if it does not.

@@ -1,0 +1,156 @@
+// Colours and metrics, in one place so the rest of the UI never names a
+// literal. The palette is a dark one because this is a tool that sits next to
+// a DAW or a meter bridge all day.
+
+export global Theme {
+    out property <color> bg:          #14161b;
+    out property <color> bg-raised:   #1c1f27;
+    out property <color> bg-sunken:   #0f1116;
+    out property <color> card:        #232733;
+    out property <color> card-hover:  #2b3040;
+    out property <color> line:        #333949;
+
+    out property <color> text:        #e6e9f0;
+    out property <color> text-dim:    #9aa3b5;
+    out property <color> text-faint:  #6b7386;
+
+    out property <color> accent:      #5b9dff;
+    out property <color> accent-dim:  #2f5da8;
+    out property <color> good:        #55c98b;
+    out property <color> warn:        #e2b44c;
+    out property <color> bad:         #e56b6b;
+
+    out property <length> gap:        8px;
+    out property <length> pad:        12px;
+    out property <length> radius:     8px;
+    out property <length> row:        28px;
+
+    // A bar, and the height of a control standing in one. 32px is what the
+    // std-widgets text fields and dropdowns ask for, so matching it is what
+    // lets a row of mixed controls line up instead of each finding its own
+    // height. A bar is taller than its controls, and the difference is the
+    // padding that centres them -- see the toolbar in app.slint.
+    out property <length> bar:        48px;
+    out property <length> control:    32px;
+    out property <length> statusbar:  26px;
+
+    out property <length> fs-small:   11px;
+    out property <length> fs:         13px;
+    out property <length> fs-title:   15px;
+
+    // What a level looks like: green with headroom, amber once there is
+    // little left, red where a peak is about to become a clip. Shared so the
+    // bar and the figure beside it can never disagree.
+    pure public function level-color(db: float, live: bool) -> color {
+        !live ? text-faint : db > -1 ? bad : db > -6 ? warn : good
+    }
+}
+
+// A flat, quiet button. The whole UI uses one button shape and varies only
+// the tone, so the eye can find the one destructive control quickly.
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> active: false;
+    in property <length> pad-h: 10px;
+    callback clicked();
+
+    height: 26px;
+    width: max(26px, label.preferred-width + pad-h * 2);
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent
+                : root.primary ? Theme.accent-dim : Theme.line;
+    background: !root.enabled ? transparent
+              : touch.pressed ? Theme.card-hover
+              : root.active ? Theme.accent-dim
+              : touch.has-hover ? Theme.card-hover
+              : root.primary ? Theme.accent-dim : Theme.card;
+
+    label := Text {
+        text: root.text;
+        font-size: Theme.fs;
+        color: !root.enabled ? Theme.text-faint
+             : root.danger ? Theme.bad : Theme.text;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        width: 100%;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// A small on/off pill. Used for chain enable and stage bypass, where a
+// checkbox would read as "is this setting ticked" rather than "is this
+// running".
+export component Toggle inherits Rectangle {
+    in property <bool> checked;
+    in property <color> on-color: Theme.good;
+    callback toggled(bool);
+
+    width: 34px;
+    height: 18px;
+    border-radius: 9px;
+    background: root.checked ? root.on-color.with-alpha(0.35) : Theme.bg-sunken;
+    border-width: 1px;
+    border-color: root.checked ? root.on-color : Theme.line;
+
+    knob := Rectangle {
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        y: 2px;
+        x: root.checked ? parent.width - self.width - 3px : 3px;
+        background: root.checked ? root.on-color : Theme.text-faint;
+        animate x { duration: 100ms; easing: ease-out; }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.checked); }
+    }
+}
+
+// A peak meter in dBFS.
+//
+// The scale is deliberately not linear in dB either: the top 20 dB get half
+// the width, because that is the part being watched. Below -60 the bar is
+// simply empty -- the filters floor at -240 and a linear dB scale down there
+// would make silence look like a reading.
+export component Meter inherits Rectangle {
+    in property <float> db: -240;
+    in property <bool> live: false;
+
+    property <float> norm: root.db <= -60 ? 0
+        : root.db >= 0 ? 1
+        : root.db >= -20 ? 0.5 + (root.db + 20) / 40
+        : 0.5 * (root.db + 60) / 40;
+
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.bg-sunken;
+    clip: true;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * root.norm;
+        height: 100%;
+        border-radius: 3px;
+        background: Theme.level-color(root.db, root.live);
+        animate width { duration: 60ms; easing: ease-out; }
+    }
+
+    // -6 dBFS, where a mix stops having headroom worth the name.
+    Rectangle {
+        x: parent.width * 0.85;
+        width: 1px;
+        height: 100%;
+        background: Theme.bg.with-alpha(0.6);
+    }
+}

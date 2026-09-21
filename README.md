@@ -16,17 +16,22 @@ Six audio filters, each a standalone PipeWire filter node built on
 Each one takes its settings from the command line, prints them on stdout at
 startup, and accepts changes on stdin while audio is flowing.
 
+There is also a desktop app, [`app/`](app/), that drives them: it finds the
+filter binaries, builds chains out of them and wires the graph up. See
+[app/README.md](app/README.md).
+
 ## Build
 
 ```sh
 make            # the filters, into bin/
 make test       # DSP cores diffed against reference/, offline
 make check      # the above plus the live PipeWire tests
+make app        # the filters and the GUI (needs cargo)
 ```
 
 Needs `libpipewire-0.3` development headers and a C compiler. The live tests
 additionally need a running PipeWire daemon with `pw-cat`, `pw-link` and
-`pw-dump`.
+`pw-dump`. The GUI additionally needs a Rust toolchain.
 
 ## Running one
 
@@ -148,7 +153,27 @@ Every filter has these on top of its own:
 
 `--help` lists every parameter with its range, unit and default.
 
-## A chain
+## The app
+
+```sh
+make app
+./app/target/release/pwfx
+```
+
+![pwfx](app/doc/window.png)
+
+A patchbay: it lists every source and sink on the system, lets you build any
+number of filter chains out of the binaries in `bin/`, and keeps the graph
+linked to match. It learns each filter's parameters by parsing its `--help`,
+so a new `pw_*` program appears in it with the right knobs and no changes to
+the app. Mono and stereo are matched up automatically -- by channel name where
+the names agree, by position otherwise -- and any pairing can be overridden.
+Chains, routing and settings are saved, with named presets and a default
+state to go back to.
+
+Full description in [app/README.md](app/README.md).
+
+## A chain, by hand
 
 ```sh
 ./bin/pw_hpf   -c 2 -f 80  -n 4 --node-name chain-hpf   &

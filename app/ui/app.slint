@@ -1,0 +1,511 @@
+import { Theme, Btn, Toggle, Meter } from "theme.slint";
+import { ParamRow, StageRow, ChainRow, LevelRow, MapRow, StageCard, MapDialog, NameField } from "parts.slint";
+import { ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+
+export { ParamRow, StageRow, ChainRow, LevelRow, MapRow }
+
+component Card inherits Rectangle {
+    background: Theme.card;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.line;
+}
+
+component SectionLabel inherits Text {
+    font-size: Theme.fs-small;
+    color: Theme.text-faint;
+    letter-spacing: 0.6px;
+}
+
+// One end of a chain: what it is plugged into, and how the channels line up.
+component EndpointCard inherits Card {
+    in property <string> heading;
+    in property <[string]> options;
+    in property <int> index;
+    in property <string> detail;
+    in property <bool> mapped;
+    callback selected(int);
+    callback edit-map();
+
+    height: 74px;
+
+    VerticalLayout {
+        padding: Theme.pad;
+        spacing: 6px;
+
+        HorizontalLayout {
+            SectionLabel { text: root.heading; horizontal-stretch: 1; }
+            Text {
+                text: root.detail;
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+            }
+        }
+        HorizontalLayout {
+            spacing: Theme.gap;
+            ComboBox {
+                horizontal-stretch: 1;
+                model: root.options;
+                current-index: root.index;
+                selected => { root.selected(self.current-index); }
+            }
+            Btn {
+                text: root.mapped ? "Channels ✱" : "Channels";
+                enabled: root.index > 0;
+                clicked => { root.edit-map(); }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "pwfx — PipeWire filter chains";
+    preferred-width: 1180px;
+    preferred-height: 780px;
+    min-width: 900px;
+    min-height: 560px;
+    background: Theme.bg;
+    default-font-size: Theme.fs;
+
+    // --- chain list -----------------------------------------------------
+    in property <[ChainRow]> chains;
+    in-out property <int> selected: -1;
+
+    // --- the selected chain ---------------------------------------------
+    in property <bool> has-chain: false;
+    in property <string> chain-name;
+    in property <bool> chain-enabled;
+    in property <[string]> width-options;
+    in property <int> width-index;
+    in property <[StageRow]> stages;
+    in property <[LevelRow]> levels;
+
+    in property <[string]> source-options;
+    in property <int> source-index;
+    in property <string> source-detail;
+    in property <bool> source-mapped;
+    in property <[string]> sink-options;
+    in property <int> sink-index;
+    in property <string> sink-detail;
+    in property <bool> sink-mapped;
+
+    in property <[string]> plugin-options;
+    in-out property <int> plugin-index: 0;
+
+    // --- app-wide --------------------------------------------------------
+    in property <bool> metering: true;
+    in property <string> status;
+    in property <bool> status-bad: false;
+    in property <[string]> presets;
+    in-out property <int> preset-index: -1;
+    in-out property <string> preset-name;
+    in property <[string]> log;
+    in-out property <bool> log-open: false;
+    in property <int> log-errors: 0;
+
+    // --- the channel matrix ----------------------------------------------
+    in property <bool> map-open: false;
+    in property <string> map-title;
+    in property <string> map-node;
+    in property <bool> map-auto;
+    in property <[string]> map-channels;
+    in property <[MapRow]> map-rows;
+
+    callback select-chain(int);
+    callback add-chain();
+    callback remove-chain();
+    callback rename-chain(string);
+    callback set-chain-enabled(bool);
+    callback set-width(int);
+
+    callback add-stage();
+    callback remove-stage(int);
+    callback move-stage(int, int);
+    callback set-bypass(int, bool);
+    callback param-slide(int, string, float);
+    callback param-commit(int, string, string);
+    callback param-pick(int, string, int);
+    callback param-toggle(int, string, bool);
+
+    callback set-source(int);
+    callback set-sink(int);
+    callback open-map(bool);
+    callback close-map();
+    callback map-set-auto(bool);
+    callback map-toggle(int, int);
+
+    callback set-metering(bool);
+    callback save-default();
+    callback restore-default();
+    callback save-preset(string);
+    callback load-preset(int);
+    callback delete-preset(int);
+    callback rescan();
+
+    VerticalLayout {
+        // ============================ toolbar ============================
+        Rectangle {
+            height: Theme.bar;
+            background: Theme.bg-raised;
+            HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                // What centres the row. A child with a height of its own is
+                // placed at the top of the space a layout gives it, not in
+                // the middle of it, so a 32px control in a 48px bar would sit
+                // against the top edge while the text fields stretched to the
+                // full height beside it. Making the content box exactly one
+                // control tall takes the question away.
+                padding-top: (Theme.bar - Theme.control) / 2;
+                padding-bottom: (Theme.bar - Theme.control) / 2;
+                spacing: Theme.gap;
+
+                Text {
+                    text: "pwfx";
+                    font-size: 17px;
+                    font-weight: 700;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "PipeWire filter chains";
+                    font-size: Theme.fs-small;
+                    color: Theme.text-faint;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                Text {
+                    text: "meters";
+                    font-size: Theme.fs-small;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Toggle {
+                        checked: root.metering;
+                        on-color: Theme.accent;
+                        toggled(v) => { root.set-metering(v); }
+                    }
+                }
+
+                Rectangle { width: 10px; }
+
+                LineEdit {
+                    width: 130px;
+                    placeholder-text: "preset name";
+                    text: root.preset-name;
+                    edited(t) => { root.preset-name = t; }
+                    accepted(t) => { root.save-preset(t); root.preset-name = ""; }
+                }
+                Btn {
+                    height: Theme.control;
+                    text: "Save";
+                    enabled: root.preset-name != "";
+                    clicked => { root.save-preset(root.preset-name); root.preset-name = ""; }
+                }
+                ComboBox {
+                    width: 150px;
+                    model: root.presets;
+                    current-index: root.preset-index;
+                    selected => { root.preset-index = self.current-index; }
+                }
+                Btn {
+                    height: Theme.control;
+                    text: "Load";
+                    enabled: root.preset-index >= 0;
+                    clicked => { root.load-preset(root.preset-index); }
+                }
+                Btn {
+                    height: Theme.control;
+                    text: "Delete";
+                    danger: true;
+                    enabled: root.preset-index >= 0;
+                    clicked => { root.delete-preset(root.preset-index); }
+                }
+
+                Rectangle { width: 1px; background: Theme.line; }
+
+                Btn {
+                    height: Theme.control;
+                    text: "Save as default";
+                    clicked => { root.save-default(); }
+                }
+                Btn {
+                    height: Theme.control;
+                    text: "Restore default";
+                    primary: true;
+                    clicked => { root.restore-default(); }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.line; }
+
+        // ============================ body ===============================
+        HorizontalLayout {
+            vertical-stretch: 1;
+
+            // ---------------------- chain list --------------------------
+            Rectangle {
+                width: 246px;
+                background: Theme.bg-raised;
+                VerticalLayout {
+                    padding: Theme.pad;
+                    spacing: Theme.gap;
+
+                    HorizontalLayout {
+                        SectionLabel { text: "CHAINS"; horizontal-stretch: 1; vertical-alignment: center; }
+                        Btn { text: "+ New"; primary: true; clicked => { root.add-chain(); } }
+                    }
+
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            for c[i] in root.chains : Rectangle {
+                                height: 52px;
+                                border-radius: 6px;
+                                background: i == root.selected ? Theme.accent-dim.with-alpha(0.45)
+                                          : pick.has-hover ? Theme.card-hover : Theme.card;
+                                border-width: 1px;
+                                border-color: i == root.selected ? Theme.accent : transparent;
+
+                                HorizontalLayout {
+                                    padding: 8px;
+                                    spacing: Theme.gap;
+                                    Rectangle {
+                                        width: 6px;
+                                        height: 6px;
+                                        y: 8px;
+                                        border-radius: 3px;
+                                        background: !c.enabled ? Theme.text-faint
+                                                  : c.problem ? Theme.warn : Theme.good;
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        Text {
+                                            text: c.name;
+                                            font-size: Theme.fs;
+                                            font-weight: 600;
+                                            color: Theme.text;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: c.detail;
+                                            font-size: Theme.fs-small;
+                                            color: Theme.text-faint;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                                pick := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.select-chain(i); }
+                                }
+                            }
+                            if root.chains.length == 0 : Text {
+                                text: "No chains yet.\n\nA chain is a source, a row of filters and a sink. Press “New” to make one.";
+                                font-size: Theme.fs-small;
+                                color: Theme.text-faint;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { width: 1px; background: Theme.line; }
+
+            // ---------------------- chain detail ------------------------
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.bg;
+
+                if !root.has-chain : Text {
+                    text: "Select a chain on the left, or make a new one.";
+                    color: Theme.text-faint;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+
+                if root.has-chain : ScrollView {
+                    VerticalLayout {
+                        padding: Theme.pad;
+                        spacing: Theme.gap;
+                        alignment: start;
+
+                        // chain header
+                        HorizontalLayout {
+                            spacing: Theme.gap;
+                            // Same as the parameter fields: a name typed and
+                            // then clicked away has still been typed.
+                            NameField {
+                                value: root.chain-name;
+                                commit(t) => { root.rename-chain(t); }
+                            }
+                            Toggle {
+                                y: 5px;
+                                checked: root.chain-enabled;
+                                toggled(v) => { root.set-chain-enabled(v); }
+                            }
+                            Text {
+                                text: root.chain-enabled ? "running" : "stopped";
+                                font-size: Theme.fs-small;
+                                color: root.chain-enabled ? Theme.good : Theme.text-faint;
+                                vertical-alignment: center;
+                                width: 60px;
+                            }
+                            ComboBox {
+                                // Wide enough for "Stereo (2 channels)",
+                                // which is the longest `width_label` produces
+                                // -- everything above two is "N channels".
+                                width: 190px;
+                                model: root.width-options;
+                                current-index: root.width-index;
+                                selected => { root.set-width(self.current-index); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Btn {
+                                text: "Delete chain";
+                                danger: true;
+                                clicked => { root.remove-chain(); }
+                            }
+                        }
+
+                        EndpointCard {
+                            heading: "INPUT — take audio from";
+                            options: root.source-options;
+                            index: root.source-index;
+                            detail: root.source-detail;
+                            mapped: root.source-mapped;
+                            selected(i) => { root.set-source(i); }
+                            edit-map => { root.open-map(true); }
+                        }
+
+                        for s[i] in root.stages : StageCard {
+                            s: s;
+                            index: i;
+                            count: root.stages.length;
+                            metering: root.metering;
+                            level: root.levels[i];
+                            set-bypass(v) => { root.set-bypass(i, v); }
+                            remove => { root.remove-stage(i); }
+                            move(d) => { root.move-stage(i, d); }
+                            slide(n, v) => { root.param-slide(i, n, v); }
+                            commit(n, t) => { root.param-commit(i, n, t); }
+                            pick(n, c) => { root.param-pick(i, n, c); }
+                            toggle(n, v) => { root.param-toggle(i, n, v); }
+                        }
+
+                        HorizontalLayout {
+                            spacing: Theme.gap;
+                            ComboBox {
+                                // Takes the row rather than a width chosen
+                                // here: what is in it is `name — summary` for
+                                // whatever filters are on disk, and the
+                                // longest of the six that ship is already 63
+                                // characters. A fixed width would only be
+                                // right until someone adds a seventh.
+                                horizontal-stretch: 1;
+                                model: root.plugin-options;
+                                current-index: root.plugin-index;
+                                selected => { root.plugin-index = self.current-index; }
+                            }
+                            Btn {
+                                text: "+ Add filter";
+                                primary: true;
+                                enabled: root.plugin-options.length > 0;
+                                clicked => { root.add-stage(); }
+                            }
+                            Btn {
+                                text: "Rescan";
+                                clicked => { root.rescan(); }
+                            }
+                        }
+
+                        EndpointCard {
+                            heading: "OUTPUT — send audio to";
+                            options: root.sink-options;
+                            index: root.sink-index;
+                            detail: root.sink-detail;
+                            mapped: root.sink-mapped;
+                            selected(i) => { root.set-sink(i); }
+                            edit-map => { root.open-map(false); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ============================ log ================================
+        if root.log-open : Rectangle {
+            height: 150px;
+            background: Theme.bg-sunken;
+            border-width: 1px;
+            border-color: Theme.line;
+            ScrollView {
+                VerticalLayout {
+                    padding: 6px;
+                    alignment: start;
+                    for l in root.log : Text {
+                        text: l;
+                        font-family: "monospace";
+                        font-size: Theme.fs-small;
+                        color: Theme.text-dim;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // ============================ status =============================
+        Rectangle {
+            height: Theme.statusbar;
+            background: Theme.bg-raised;
+            HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                spacing: Theme.gap;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    y: 9px;
+                    border-radius: 4px;
+                    background: root.status-bad ? Theme.bad : Theme.good;
+                }
+                Text {
+                    text: root.status;
+                    font-size: Theme.fs-small;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                Btn {
+                    height: Theme.statusbar - 4px;
+                    text: root.log-open ? "Hide log" : (root.log-errors > 0 ? "Log ⚠" : "Log");
+                    danger: root.log-errors > 0 && !root.log-open;
+                    clicked => { root.log-open = !root.log-open; }
+                }
+            }
+        }
+    }
+
+    if root.map-open : MapDialog {
+        width: 100%;
+        height: 100%;
+        title: root.map-title;
+        node: root.map-node;
+        automatic: root.map-auto;
+        channels: root.map-channels;
+        rows: root.map-rows;
+        close => { root.close-map(); }
+        set-auto(v) => { root.map-set-auto(v); }
+        toggle-cell(r, c) => { root.map-toggle(r, c); }
+    }
+}

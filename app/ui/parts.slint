@@ -1,0 +1,561 @@
+import { Theme, Btn, Toggle, Meter } from "theme.slint";
+import { Slider, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+
+// One knob of one filter.
+//
+// `value` is always the text the filter last reported, never what the GUI
+// last sent -- so a value the filter clamped, rounded or refused shows up
+// here as itself. `pos` is the slider position for that value, worked out on
+// the Rust side because a frequency knob is logarithmic and the mapping has
+// to match the one that converts a drag back into a number.
+export struct ParamRow {
+    name: string,
+    label: string,
+    unit: string,
+    help: string,
+    kind: string,        // number | bool | enum | text
+    value: string,
+    pos: float,
+    on: bool,
+    choices: [string],
+    choice-index: int,
+}
+
+export struct StageRow {
+    node: string,
+    plugin: string,
+    title: string,
+    summary: string,
+    bypass: bool,
+    running: bool,
+    latency: string,
+    error: string,
+    params: [ParamRow],
+}
+
+/// A stage's two meter readings: the level for the bar, and the figure to
+/// print beside it. The text comes from Rust rather than being formatted
+/// here so that the floor the filters report -- -240 dB, meaning nothing at
+/// all -- can be shown as nothing rather than as a number.
+export struct LevelRow {
+    in-db: float,
+    in-text: string,
+    out-db: float,
+    out-text: string,
+}
+
+export struct ChainRow {
+    id: string,
+    name: string,
+    enabled: bool,
+    detail: string,
+    problem: bool,
+}
+
+export struct MapRow {
+    port: string,
+    channel: string,
+    cells: [bool],
+}
+
+// The std widgets own their own value: typing into a `LineEdit` or dragging
+// a `Slider` writes the property, and in Slint writing a property removes the
+// binding that was feeding it. From that moment the widget shows what the
+// user did rather than what the filter took, so the model has to be pushed
+// back in by hand whenever it moves -- and never into a widget the user is
+// still holding, which would fight them mid-edit. That is what the
+// `changed p` handlers below are for.
+
+component NumberEditor inherits HorizontalLayout {
+    in property <ParamRow> p;
+    in property <bool> enabled;
+    callback slide(float);
+    callback commit(string);
+
+    spacing: Theme.gap;
+
+    changed p => {
+        if (!slider.has-focus) { slider.value = root.p.pos; }
+        if (!field.has-focus) { field.text = root.p.value; }
+    }
+
+    slider := Slider {
+        enabled: root.enabled;
+        minimum: 0;
+        maximum: 1;
+        value: root.p.pos;
+        horizontal-stretch: 1;
+        changed(v) => { root.slide(v); }
+    }
+
+    field := LineEdit {
+        enabled: root.enabled;
+        width: 72px;
+        text: root.p.value;
+        horizontal-alignment: right;
+        // Enter commits, and so does clicking away. Typing a figure and then
+        // moving on is the commonest way to set one of these -- an EQ is
+        // sixteen of them -- and dropping it silently is how a setting comes
+        // to look saved when it is not. Reading the value back afterwards is
+        // what makes a rejected or clamped entry correct itself on screen
+        // instead of leaving the text the user typed sitting there.
+        accepted(t) => {
+            root.commit(t);
+            self.text = root.p.value;
+        }
+        changed has-focus => {
+            if (!self.has-focus) {
+                root.commit(self.text);
+                self.text = root.p.value;
+            }
+        }
+    }
+
+    Text {
+        text: root.p.unit;
+        color: Theme.text-faint;
+        font-size: Theme.fs-small;
+        vertical-alignment: center;
+        width: 24px;
+    }
+}
+
+component EnumEditor inherits HorizontalLayout {
+    in property <ParamRow> p;
+    in property <bool> enabled;
+    callback pick(int);
+
+    alignment: start;
+
+    changed p => {
+        if (!box.has-focus) { box.current-index = root.p.choice-index; }
+    }
+
+    box := ComboBox {
+        enabled: root.enabled;
+        width: 140px;
+        model: root.p.choices;
+        current-index: root.p.choice-index;
+        selected => { root.pick(self.current-index); }
+    }
+}
+
+component TextEditor inherits HorizontalLayout {
+    in property <ParamRow> p;
+    in property <bool> enabled;
+    callback commit(string);
+
+    changed p => {
+        if (!field.has-focus) { field.text = root.p.value; }
+    }
+
+    field := LineEdit {
+        enabled: root.enabled;
+        horizontal-stretch: 1;
+        text: root.p.value;
+        accepted(t) => {
+            root.commit(t);
+            self.text = root.p.value;
+        }
+        changed has-focus => {
+            if (!self.has-focus) {
+                root.commit(self.text);
+                self.text = root.p.value;
+            }
+        }
+    }
+}
+
+// A single-line text field that keeps following its model after it has been
+// typed into, and that commits on the way out as well as on Enter.
+export component NameField inherits HorizontalLayout {
+    in property <string> value;
+    in property <length> field-width: 260px;
+    callback commit(string);
+
+    changed value => {
+        if (!field.has-focus) { field.text = root.value; }
+    }
+
+    field := LineEdit {
+        width: root.field-width;
+        text: root.value;
+        accepted(t) => { root.commit(t); }
+        changed has-focus => {
+            if (!self.has-focus) { root.commit(self.text); }
+        }
+    }
+}
+
+export component ParamEditor inherits Rectangle {
+    in property <ParamRow> p;
+    in property <bool> enabled: true;
+    callback slide(float);
+    callback commit(string);
+    callback pick(int);
+    callback toggle(bool);
+
+    height: Theme.row;
+
+    HorizontalLayout {
+        spacing: Theme.gap;
+        alignment: stretch;
+
+        Text {
+            text: root.p.label;
+            color: root.enabled ? Theme.text-dim : Theme.text-faint;
+            font-size: Theme.fs;
+            vertical-alignment: center;
+            width: 96px;
+            overflow: elide;
+        }
+
+        if root.p.kind == "number" : NumberEditor {
+            horizontal-stretch: 1;
+            p: root.p;
+            enabled: root.enabled;
+            slide(v) => { root.slide(v); }
+            commit(t) => { root.commit(t); }
+        }
+
+        if root.p.kind == "bool" : HorizontalLayout {
+            horizontal-stretch: 1;
+            alignment: start;
+            padding-top: 5px;
+            Toggle {
+                checked: root.p.on;
+                on-color: Theme.accent;
+                toggled(v) => { root.toggle(v); }
+            }
+        }
+
+        if root.p.kind == "enum" : EnumEditor {
+            horizontal-stretch: 1;
+            p: root.p;
+            enabled: root.enabled;
+            pick(i) => { root.pick(i); }
+        }
+
+        if root.p.kind == "text" : TextEditor {
+            horizontal-stretch: 1;
+            p: root.p;
+            enabled: root.enabled;
+            commit(t) => { root.commit(t); }
+        }
+    }
+}
+
+component LevelStrip inherits HorizontalLayout {
+    in property <string> label;
+    in property <float> db;
+    in property <string> text;
+    in property <bool> live;
+
+    spacing: 6px;
+
+    Text {
+        text: root.label;
+        width: 22px;
+        font-size: Theme.fs-small;
+        color: Theme.text-faint;
+        vertical-alignment: center;
+    }
+    Meter {
+        horizontal-stretch: 1;
+        y: 6px;
+        db: root.db;
+        live: root.live;
+    }
+    // Monospaced and right-aligned: a peak meter's figure moves several
+    // times a second, and proportional digits make it jitter sideways while
+    // you are trying to read it.
+    Text {
+        text: root.text;
+        width: 40px;
+        font-family: "monospace";
+        font-size: Theme.fs-small;
+        color: Theme.level-color(root.db, root.live);
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+export component StageCard inherits Rectangle {
+    in property <StageRow> s;
+    in property <int> index;
+    in property <int> count;
+    in property <LevelRow> level;
+    in property <bool> metering: false;
+
+    callback set-bypass(bool);
+    callback remove();
+    callback move(int);      // -1 up, +1 down
+    callback slide(string, float);
+    callback commit(string, string);
+    callback pick(string, int);
+    callback toggle(string, bool);
+
+    background: Theme.card;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: root.s.error != "" ? Theme.bad.with-alpha(0.5) : Theme.line;
+
+    VerticalLayout {
+        padding: Theme.pad;
+        spacing: 6px;
+
+        // --- header ---------------------------------------------------
+        HorizontalLayout {
+            spacing: Theme.gap;
+            alignment: stretch;
+
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                y: 6px;
+                border-radius: 4px;
+                background: !root.s.running ? Theme.bad
+                          : root.s.bypass ? Theme.text-faint : Theme.good;
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                Text {
+                    text: root.s.title;
+                    font-size: Theme.fs-title;
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                Text {
+                    text: root.s.summary;
+                    font-size: Theme.fs-small;
+                    color: Theme.text-faint;
+                    overflow: elide;
+                }
+            }
+            Text {
+                text: root.s.latency;
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "bypass";
+                font-size: Theme.fs-small;
+                color: Theme.text-dim;
+                vertical-alignment: center;
+            }
+            Toggle {
+                checked: root.s.bypass;
+                on-color: Theme.warn;
+                toggled(v) => { root.set-bypass(v); }
+            }
+            Btn {
+                text: "↑";
+                enabled: root.index > 0;
+                clicked => { root.move(-1); }
+            }
+            Btn {
+                text: "↓";
+                enabled: root.index < root.count - 1;
+                clicked => { root.move(1); }
+            }
+            Btn {
+                text: "✕";
+                danger: true;
+                clicked => { root.remove(); }
+            }
+        }
+
+        if root.metering : HorizontalLayout {
+            spacing: 18px;
+            LevelStrip {
+                horizontal-stretch: 1;
+                label: "in";
+                db: root.level.in-db;
+                text: root.level.in-text;
+                live: root.s.running;
+            }
+            LevelStrip {
+                horizontal-stretch: 1;
+                label: "out";
+                db: root.level.out-db;
+                text: root.level.out-text;
+                live: root.s.running;
+            }
+        }
+
+        if root.s.error != "" : Text {
+            text: root.s.error;
+            font-size: Theme.fs-small;
+            color: Theme.bad;
+            wrap: word-wrap;
+        }
+
+        Rectangle { height: 1px; background: Theme.line; }
+
+        // --- parameters -----------------------------------------------
+        for p in root.s.params : ParamEditor {
+            p: p;
+            enabled: root.s.running;
+            slide(v) => { root.slide(p.name, v); }
+            commit(t) => { root.commit(p.name, t); }
+            pick(i) => { root.pick(p.name, i); }
+            toggle(v) => { root.toggle(p.name, v); }
+        }
+    }
+}
+
+// The channel matrix for one end of a chain.
+//
+// Rows are the device's ports in the order it declares them, columns are the
+// chain's channels. More than one tick in a column is not a mistake: PipeWire
+// sums everything linked into an input port, which is how a stereo source
+// folds into a mono chain.
+export component MapDialog inherits Rectangle {
+    in property <string> title;
+    in property <string> node;
+    in property <bool> automatic;
+    in property <[string]> channels;
+    in property <[MapRow]> rows;
+
+    callback close();
+    callback set-auto(bool);
+    callback toggle-cell(int, int);
+
+    background: #000000.with-alpha(0.55);
+
+    TouchArea { clicked => { root.close(); } }
+
+    Rectangle {
+        width: min(640px, root.width - 64px);
+        // Tall enough for the rows there are, and no taller: a stereo device
+        // is two lines and should not open a half-empty panel.
+        height: min(min(520px, root.height - 64px),
+                    210px + root.rows.length * 28px);
+        background: Theme.bg-raised;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.line;
+
+        TouchArea {} // swallow clicks so they do not close the dialog
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: Theme.gap;
+
+            Text {
+                text: root.title;
+                font-size: Theme.fs-title;
+                font-weight: 600;
+                color: Theme.text;
+            }
+            Text {
+                text: root.node;
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                spacing: Theme.gap;
+                alignment: start;
+                Toggle {
+                    checked: root.automatic;
+                    on-color: Theme.accent;
+                    toggled(v) => { root.set-auto(v); }
+                }
+                Text {
+                    text: root.automatic
+                        ? "Automatic — matched by channel name, then by position"
+                        : "Manual";
+                    font-size: Theme.fs-small;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.line; }
+
+            HorizontalLayout {
+                spacing: Theme.gap;
+                Text {
+                    text: "port";
+                    width: 190px;
+                    font-size: Theme.fs-small;
+                    color: Theme.text-faint;
+                }
+                for c in root.channels : Text {
+                    text: c;
+                    width: 48px;
+                    font-size: Theme.fs-small;
+                    color: Theme.text-dim;
+                    horizontal-alignment: center;
+                }
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: start;
+                    for r[ri] in root.rows : Rectangle {
+                        height: 26px;
+                        background: mod(ri, 2) == 0 ? transparent : Theme.bg-sunken.with-alpha(0.5);
+                        HorizontalLayout {
+                            spacing: Theme.gap;
+                            HorizontalLayout {
+                                width: 190px;
+                                spacing: 6px;
+                                Text {
+                                    text: r.port;
+                                    font-size: Theme.fs-small;
+                                    color: Theme.text;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text: r.channel;
+                                    font-size: Theme.fs-small;
+                                    color: Theme.text-faint;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            for on[ci] in r.cells : Rectangle {
+                                width: 48px;
+                                Rectangle {
+                                    width: 16px;
+                                    height: 16px;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: on ? Theme.accent : Theme.line;
+                                    background: on ? Theme.accent.with-alpha(0.4)
+                                              : cell.has-hover ? Theme.card-hover : transparent;
+                                    cell := TouchArea {
+                                        enabled: !root.automatic;
+                                        mouse-cursor: root.automatic ? default : pointer;
+                                        clicked => { root.toggle-cell(ri, ci); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if root.rows.length == 0 : Text {
+                        text: "This node has no audio ports in that direction right now.";
+                        font-size: Theme.fs-small;
+                        color: Theme.text-faint;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                Btn {
+                    text: "Done";
+                    primary: true;
+                    clicked => { root.close(); }
+                }
+            }
+        }
+    }
+}

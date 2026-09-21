@@ -1,6 +1,7 @@
 # Build output
 /bin/
 /build/
+/app/target/
 
 # The test scripts import each other, so Python caches bytecode here
 __pycache__/
