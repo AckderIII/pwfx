@@ -196,27 +196,28 @@ component TextEditor inherits HorizontalLayout {
 // changes, and never while the user has the list open. Both handlers are
 // needed: the options can change while the index stays the same number, and
 // that is exactly the case the widget gets wrong on its own.
-export component Picker inherits HorizontalLayout {
+//
+// This inherits `ComboBox` rather than wrapping one, so that it takes a
+// width the way a `ComboBox` does. A wrapper would have been a layout, and a
+// layout cannot give its child less than the 160px minimum the widget asks
+// for -- so `width: 150px` on the wrapper left the box hanging 10px out of
+// it and over whatever came next in the row.
+export component Picker inherits ComboBox {
     in property <[string]> options;
     in property <int> index;
-    in property <bool> enabled: true;
     callback picked(int);
 
     function sync() {
-        if (!box.has-focus) {
-            box.current-index = root.index;
+        if (!root.has-focus) {
+            root.current-index = root.index;
         }
     }
     changed options => { root.sync(); }
     changed index => { root.sync(); }
 
-    box := ComboBox {
-        enabled: root.enabled;
-        horizontal-stretch: 1;
-        model: root.options;
-        current-index: root.index;
-        selected => { root.picked(self.current-index); }
-    }
+    model: root.options;
+    current-index: root.index;
+    selected => { root.picked(root.current-index); }
 }
 
 // A single-line text field that keeps following its model after it has been

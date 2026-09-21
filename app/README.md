@@ -173,6 +173,13 @@ Every dropdown whose value belongs to the state therefore goes through
 `changed index` — both, because the list can change while the index stays the
 same number, and that is precisely the case the widget gets wrong on its own.
 
+`Picker` inherits `ComboBox` rather than wrapping one, and that detail is
+load-bearing too: a wrapper is a layout, and a layout cannot give its child
+less than the 160px the widget asks for. Written that way, `width: 150px` on
+the preset dropdown left the box hanging 10px out of its slot and over the
+**Load** button beside it. So the tests measure the real window — every
+dropdown keeps a row's worth of space between itself and whatever follows.
+
 ## Tests
 
 ```sh
@@ -185,8 +192,9 @@ cargo test
   backend — it clicks into a field, types, clicks away, and asserts the value
   was committed and that the field still follows the model afterwards; and it
   shrinks an endpoint list past the selection and grows it back, asserting the
-  dropdown still names the right node. These are the regression tests for the
-  two traps above; each fails if its half is removed.
+  dropdown still names the right node; and it measures the laid-out window to
+  catch a dropdown overlapping the control beside it. These are the regression
+  tests for the traps above; each fails if its half is removed.
 - `engine::round_trip` starts a real `pw_eq`, feeds it a saved chain and
   asserts the filter reports back exactly what was asked for, then that
   adopting its report and a JSON cycle both leave the state alone. Needs a

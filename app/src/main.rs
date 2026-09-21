@@ -1643,6 +1643,7 @@ mod window_tests {
             a_dropdown_follows_the_model().await;
             an_endpoint_picker_survives_its_list_changing().await;
             the_bus_pane_comes_up_and_commits_its_name().await;
+            a_picker_never_runs_into_the_control_beside_it().await;
             slint::quit_event_loop().unwrap();
         })
         .unwrap();
@@ -1745,7 +1746,7 @@ mod window_tests {
         settle(&win).await;
 
         let shown = || -> Vec<String> {
-            testing::ElementHandle::find_by_element_id(&win, "Picker::box")
+            testing::ElementHandle::find_by_element_type_name(&win, "Picker")
                 .filter_map(|e| e.accessible_value().map(|v| v.to_string()))
                 .collect()
         };
@@ -1773,6 +1774,78 @@ mod window_tests {
              back; got {:?}",
             shown()
         );
+    }
+
+    /// A `Picker` has to take the width it is given.
+    ///
+    /// It inherits `ComboBox`, which asks for at least 160px. While it was a
+    /// layout wrapping one, a narrower width on the wrapper could not be
+    /// passed on -- a layout cannot give a child less than its minimum -- so
+    /// the box hung 10px out of its slot and over the button beside it. The
+    /// preset dropdown is the one narrow enough for that to bite, and the
+    /// gap between it and "Load" simply vanished.
+    ///
+    /// Nothing about that fails to compile or looks wrong in the markup, so
+    /// this measures the real window instead: every dropdown keeps a row's
+    /// worth of space between itself and whatever button follows it.
+    async fn a_picker_never_runs_into_the_control_beside_it() {
+        let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
+        win.set_presets(strings(&["voice".into(), "guitar".into()]));
+        win.set_preset_index(0);
+        win.set_plugin_options(strings(&["pw_eq \u{2014} five bands".into()]));
+        win.set_source_options(strings(&["\u{2014} no input \u{2014}".into()]));
+        win.set_sink_options(strings(&["\u{2014} no output \u{2014}".into()]));
+        show(&win);
+        settle(&win).await;
+
+        // (left, right, top, bottom) of everything that shares a toolbar or
+        // a card row with a dropdown.
+        let rect = |e: &testing::ElementHandle| {
+            let (p, s) = (e.absolute_position(), e.size());
+            (p.x, p.x + s.width, p.y, p.y + s.height)
+        };
+        // By what it inherits rather than by name, so this measures the box
+        // that is actually drawn however `Picker` comes to be one. Measuring
+        // a wrapper instead would report the slot rather than what is
+        // sticking out of it, which is the whole fault.
+        let pickers: Vec<_> = testing::ElementQuery::from_root(&win)
+            .match_inherits("ComboBox")
+            .find_all()
+            .iter()
+            .map(rect)
+            .collect();
+        let buttons: Vec<_> = testing::ElementHandle::find_by_element_id(&win, "Btn::label")
+            .map(|e| rect(&e))
+            .collect();
+        assert!(pickers.len() >= 4, "expected the window to build its dropdowns");
+
+        // The one the bug was reported on, stated as what it should be
+        // rather than as "not overlapping": `width: 150px` means 150px.
+        let toolbar = pickers
+            .iter()
+            .find(|p| p.2 < 60.0)
+            .expect("no dropdown in the toolbar");
+        assert_eq!(
+            toolbar.1 - toolbar.0,
+            150.0,
+            "the preset dropdown must take the width the toolbar gives it"
+        );
+
+        const GAP: f32 = 8.0; // Theme.gap
+        for p in &pickers {
+            for b in &buttons {
+                let same_row = b.2 < p.3 && b.3 > p.2;
+                if same_row && b.0 >= p.0 {
+                    assert!(
+                        b.0 >= p.1 + GAP,
+                        "a dropdown ending at {} leaves no room before the \
+                         button at {}",
+                        p.1,
+                        b.0
+                    );
+                }
+            }
+        }
     }
 
     /// The bus pane is the other half of the window and has its own name
