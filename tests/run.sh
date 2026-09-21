@@ -1,0 +1,55 @@
+#!/bin/bash
+# Diff each filter's DSP core against the reference implementation it came
+# from, byte for byte, over the same test stream.
+set -u
+cd "$(dirname "$0")/.."
+S=${TMPDIR:-/tmp}/pwf-dsp.$$
+mkdir -p "$S"
+trap 'rm -rf "$S"' EXIT
+
+RATE=48000
+CH=2
+python3 tests/gen.py $RATE $CH 4 > "$S/in.raw" || exit 1
+echo "test signal: $(stat -c%s "$S/in.raw") bytes, ${RATE} Hz, ${CH} ch"
+
+fails=0
+run_case() {           # name  args...
+    local name=$1; shift
+    ./bin/ref/"$name"  "$@" < "$S/in.raw" > "$S/ref.raw" 2>/dev/null
+    ./bin/t_"$name"    "$@" < "$S/in.raw" > "$S/new.raw" 2>/dev/null
+    if cmp -s "$S/ref.raw" "$S/new.raw"; then
+        printf '  ok   %-6s %s\n' "$name" "$*"
+    else
+        printf '  FAIL %-6s %s  (%s vs %s bytes)\n' "$name" "$*" \
+               "$(stat -c%s "$S/ref.raw")" "$(stat -c%s "$S/new.raw")"
+        cmp "$S/ref.raw" "$S/new.raw" 2>&1 | head -1 | sed 's/^/        /'
+        fails=$((fails+1))
+    fi
+}
+
+. tests/cases.sh
+
+# The limiter's whole point is that the ceiling is a guarantee, not a
+# tendency. Its final clamp is a safety net that should never engage, so run
+# it hard into the ceiling and insist the breach count is zero.
+echo
+echo "limiter ceiling guarantee:"
+for args in "-C -1 -i 24 -e 30 -k 5" "-C -0.1 -i 40 -e 5 -k 1" \
+            "-C -12 -i 30 -e 200 -k 20 -O 16" "-C -3 -i 18 -e 60 -k 0 -O 1"; do
+    msg=$(./bin/t_limit -r $RATE -c $CH -b 128 -v $args \
+          < "$S/in.raw" > /dev/null 2>&1 \
+          || true; ./bin/t_limit -r $RATE -c $CH -b 128 -v $args \
+          < "$S/in.raw" 2>&1 >/dev/null)
+    breaches=$(printf '%s' "$msg" | sed -n 's/.*breaches \([0-9]*\).*/\1/p')
+    if [ "$breaches" = "0" ]; then
+        printf '  ok   %s  -- %s\n' "$args" "$msg"
+    else
+        printf '  FAIL %s  -- %s\n' "$args" "$msg"
+        fails=$((fails+1))
+    fi
+done
+
+echo
+if [ $fails -eq 0 ]; then echo "all cases pass"
+else echo "$fails case(s) failed"; fi
+exit $fails

@@ -1,0 +1,98 @@
+#!/bin/bash
+# Everything, in order of how much it needs to be true:
+#
+#   1. the DSP cores are byte-identical to the reference implementations
+#      they were ported from, and the limiter's ceiling never breaks;
+#   2. the control protocol on stdin/stdout behaves as documented;
+#   3. each filter, running in the real graph, has the response it claims;
+#   4. each filter survives its parameters being hammered under load.
+#
+# Steps 3 and 4 need a running PipeWire daemon and pw-cat/pw-link; they take
+# a few minutes because each one plays and records real audio.
+set -u
+cd "$(dirname "$0")/.."
+
+fails=0
+step() { echo; echo "=================== $* ==================="; }
+run()  { "$@" || fails=$((fails+1)); }
+
+step "build"
+run make -s all refs $(for f in tests/t_*.c; do
+        echo "bin/$(basename "$f" .c)"; done)
+
+step "1. DSP cores against the reference implementations"
+run tests/run.sh
+
+if [ "${PWF_OFFLINE_ONLY:-0}" = 1 ]; then
+    echo; echo "PWF_OFFLINE_ONLY=1: skipping the live PipeWire tests"
+    exit $fails
+fi
+
+step "2. control protocol"
+run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
+                              bin/pw_gate bin/pw_comp bin/pw_limit
+
+step "3. live response in the graph"
+# 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
+# is 24 dB/oct x 3 = 72 dB, plus the extra the bilinear transform adds near
+# the top of the band.
+run python3 tests/live.py bin/pw_lpf -c 2 -f 1000 -n 4 \
+    -- "cutoff 1000" "cutoff 1000" "order 4" "order 4" \
+       "cutoff 99999999" ERROR "order abc" ERROR "rate 44100" ERROR \
+    --audio "200,8000" "200=0+-0.6,8000=-72+-7"
+
+run python3 tests/live.py bin/pw_hpf -c 2 -f 1000 -n 4 \
+    -- "bypass on" "bypass on" "bypass off" "bypass off" \
+    --audio "125,4000" "125=-72+-7,4000=0+-0.6"
+
+run python3 tests/live.py bin/pw_eq -c 2 --b3-freq 1000 --b3-q 2 --b3-gain 6 \
+    -- "bells rbj" "bells rbj" "bells orfanidis" "bells orfanidis" \
+       "bells nonsense" ERROR "hs-gain 20" "hs-gain 20" "hs-slope 6" ERROR \
+    --audio "200,1000" "200=0+-0.8,1000=6+-0.4"
+
+# wide open: the gate passes the signal untouched, and reports its lookahead
+run python3 tests/live.py bin/pw_gate -c 2 -t -60 -k 5 \
+    -- "lookahead 10" "lookahead 10" "latency" "latency 480" \
+       "lookahead 5" "lookahead 5" "sc-lpf 50" ERROR \
+    --audio "200,4000" "200=0+-0.5,4000=0+-0.5"
+# shut: range 120 dB snaps the closed state to exact silence
+run python3 tests/live.py bin/pw_gate -c 2 -t 0 -g 120 -F 0 \
+    -- --audio "200,4000" "200=-240+-1,4000=-240+-1"
+# shut at a 20 dB range: exactly 20 dB down, not muted
+run python3 tests/live.py bin/pw_gate -c 2 -t 0 -g 20 -F 0 \
+    -- --audio "200,4000" "200=-20+-1.5,4000=-20+-1.5"
+
+# a 1 kHz tone at -10.46 dBFS, threshold -30, ratio 4, hard knee:
+# (30 - 10.46) x (1 - 1/4) = 14.66 dB of gain reduction
+run python3 tests/live.py bin/pw_comp -c 2 -t -30 -R 4 -w 0 -a 1 -e 200 -k 5 \
+    -- "link avg" "link avg" "link off" "link off" "link max" "link max" \
+       "link sideways" ERROR "ratio 0.5" ERROR \
+    --audio "1000" "1000=-14.66+-0.7"
+# the same, with 6 dB of makeup on top
+run python3 tests/live.py bin/pw_comp -c 2 -t -30 -R 4 -w 0 -a 1 -e 200 -m 6 \
+    -- --audio "1000" "1000=-8.66+-0.7"
+
+# below the ceiling: untouched, and latency is lookahead + 12 taps of
+# interpolator group delay
+run python3 tests/live.py bin/pw_limit -c 2 -C -1 -i 0 \
+    -- "latency" "latency 252" --audio "1000" "1000=0+-0.3"
+# driven 20 dB in: the ceiling holds exactly, at both settings
+run python3 tests/live.py bin/pw_limit -c 2 -C -1 -i 20 \
+    -- "oversample 3" ERROR "ceiling 3" ERROR \
+    --audio "1000" "1000=9.46+-0.35" --peak "-1+-0.25"
+run python3 tests/live.py bin/pw_limit -c 2 -C -6 -i 20 -e 30 -k 10 \
+    -- --audio "1000" "1000=4.46+-0.35" --peak "-6+-0.25"
+
+step "4. filters composed into a chain"
+run python3 tests/chain.py
+
+step "5. parameters under load"
+for b in pw_lpf pw_hpf pw_eq pw_gate pw_comp pw_limit; do
+    run python3 tests/stress.py bin/$b -c 2
+done
+
+echo
+echo "==========================================================="
+if [ $fails -eq 0 ]; then echo "everything passed"
+else echo "$fails step(s) failed"; fi
+exit $fails

@@ -1,0 +1,7 @@
+# Build output
+/bin/
+/build/
+
+# The test scripts import each other, so Python caches bytecode here
+__pycache__/
+*.pyc
