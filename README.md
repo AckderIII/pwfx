@@ -90,6 +90,37 @@ error: hs-slope: high shelf slope S=6 is too steep for a +20 dB shelf (max 2.28 
 A change can produce more than one line: moving `lookahead` moves `latency`
 with it, and the filter says so.
 
+### Level metering
+
+`in-level` and `out-level` are peak meters in dBFS, read-only. They are the
+one thing that writes to stdout unasked, so they are off until you ask:
+
+```
+meter 100
+in-level -5
+out-level -10.5
+in-level -5
+out-level -10.4
+```
+
+`meter <ms>` sets the reporting interval and `meter 0` switches it off again.
+Arming it always reports once, so turning it on over a silent signal still
+confirms it is working. A bare `in-level` queries it at any time, but with
+`meter 0` the realtime thread is not measuring, so what comes back is the last
+value from when it was on — or -240 if it never was.
+
+A reading is a peak hold that falls back at 20 dB/s, so a single one can sit
+under the true peak; the highest over a run is the one to trust. `out-level`
+is measured after the bypass crossfade, so it is what actually leaves the
+node.
+
+On the lookahead filters `out-level` lags `in-level` by the lookahead, so the
+two are not the same instant of audio — don't subtract them to get gain
+reduction.
+
+Measuring costs nothing while `meter` is 0: the realtime thread checks one
+atomic and skips the scan entirely.
+
 Driving one from a script:
 
 ```sh
@@ -110,6 +141,8 @@ Every filter has these on top of its own:
 | `rate` | the graph's sample rate, reported when it changes (read-only) |
 | `latency` | samples of latency this filter adds, reported to the graph (read-only) |
 | `bypass` | pass the input through, crossfaded over 10 ms so it cannot click |
+| `meter` | how often to report `in-level` and `out-level`, in ms; 0 (the default) is off |
+| `in-level`, `out-level` | peak level at the input and output ports in dBFS, floored at -240 (read-only) |
 | `max-rate` | the highest rate delay lines are sized for at startup (command line only) |
 | `node-name`, `target`, `node-latency` | PipeWire plumbing (command line only) |
 

@@ -61,7 +61,7 @@ def main():
               "lookahead stages report %d + %d samples"
               % (latency.get("chain-comp", -1), latency.get("chain-limit", -1)))
 
-        mono, _ = run_audio("chain-hpf", 48000, 2, [60, 1000], seconds=4.0,
+        mono, _, _ = run_audio("chain-hpf", 48000, 2, [60, 1000], seconds=4.0,
                             out_node="chain-limit")
         check(len(mono) > 1000, "audio traverses all three stages",
               "%d frames" % len(mono))

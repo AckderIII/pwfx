@@ -21,11 +21,13 @@ usage:
   live.py BIN [filter-args...]
           [-- "cmd" expected ...]
           [--audio "tone[,tone...]" "freq=db+-tol[,...]"]
-          [--peak "db+-tol"]
+          [--peak "db+-tol"] [--meter]
 
 --audio levels are relative to the amplitude of each tone as played, so an
 unaffected band reads 0 dB.  --peak is the absolute sample peak of the
 recorded window in dBFS, which is how a limiter's ceiling gets checked.
+--meter turns on in-level/out-level during the audio run and checks them
+against the signal played in and the signal recorded out.
 """
 
 import json
@@ -217,7 +219,8 @@ def db(x):
 def run_audio(node_name, rate, ch, tones, seconds=4.0, amp=0.3, extra_src=None,
               out_node=None):
     """Play a sum of tones into the filter, record what comes out, and return
-    the recorded samples of channel 0 plus the raw interleaved stream.
+    the recorded samples of channel 0, the raw interleaved stream, and the
+    peak of the signal that was played, in dBFS.
 
     out_node taps a different node than the one being fed, which is how a
     chain of several filters gets measured end to end."""
@@ -266,7 +269,7 @@ def run_audio(node_name, rate, ch, tones, seconds=4.0, amp=0.3, extra_src=None,
 
     s = read_wav_f32(dst)
     shutil.rmtree(tmp, ignore_errors=True)
-    return s[0::ch], s
+    return s[0::ch], s, db(max(abs(v) for v in frames))
 
 
 def steady_window(x, rate, want=1.0, skip=0.5):
@@ -299,6 +302,9 @@ def parse_expect(spec):
 def main():
     argv = sys.argv[1:]
     audio = peak_spec = None
+    meter = "--meter" in argv
+    if meter:
+        argv.remove("--meter")
     if "--peak" in argv:
         i = argv.index("--peak")
         peak_spec = argv[i + 1]
@@ -368,7 +374,25 @@ def main():
         tones = [float(t) for t in audio[0].split(",")]
         expect = parse_expect(audio[1])
         try:
-            mono, _ = run_audio(name, rate, ch, tones)
+            if meter:
+                f.set("meter 50")
+            mono, _, src_db = run_audio(name, rate, ch, tones)
+            levels = {"in-level": [], "out-level": []}
+            if meter:
+                # the reader thread kept draining while audio ran, so the
+                # reports are queued up waiting
+                while True:
+                    l = f.line(0.2, skip_comments=True)
+                    if l is None:
+                        break
+                    k, _, v = l.partition(" ")
+                    if k in levels:
+                        levels[k].append(float(v))
+                f.set("meter 0")
+                for l in getattr(f, "extra", []):
+                    k, _, v = l.partition(" ")
+                    if k in levels:
+                        levels[k].append(float(v))
             if not mono:
                 check(False, "audio passes through the filter", "nothing recorded")
             else:
@@ -385,6 +409,22 @@ def main():
                     check(abs(got_db - want_db) <= tol,
                           "%7.0f Hz: %+7.2f dB (want %+.2f +- %.2f)"
                           % (freq, got_db, want_db, tol))
+            if meter:
+                # A peak meter falls back between reports, so any single
+                # reading can sit under the true peak; the highest reading
+                # over the run is the one that has to match.
+                got_in = max(levels["in-level"], default=-240.0)
+                got_out = max(levels["out-level"], default=-240.0)
+                rec_db = db(max(abs(v) for v in mono)) if mono else -240.0
+                check(len(levels["in-level"]) > 5,
+                      "meter reported %d in-level / %d out-level lines"
+                      % (len(levels["in-level"]), len(levels["out-level"])))
+                check(abs(got_in - src_db) <= 1.0,
+                      "in-level %+.1f dBFS matches the signal played in "
+                      "(%+.2f)" % (got_in, src_db))
+                check(abs(got_out - rec_db) <= 1.0,
+                      "out-level %+.1f dBFS matches the signal recorded out "
+                      "(%+.2f)" % (got_out, rec_db))
         except Exception as e:
             check(False, "audio path", repr(e))
 

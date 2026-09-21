@@ -97,7 +97,7 @@ def main():
     t = threading.Thread(target=hammer, daemon=True)
     t.start()
     try:
-        mono, _ = run_audio(name, 48000, 2, [220, 3000], seconds=3.0)
+        mono, _, _ = run_audio(name, 48000, 2, [220, 3000], seconds=3.0)
     finally:
         stop.set()
         t.join(timeout=5)

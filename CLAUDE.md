@@ -59,6 +59,15 @@ is shared:
 - `process()` runs on the realtime thread. It acquire-loads a published counter,
   reads that slot, and never writes to it.
 
+The **level meters are the one path that runs the other way**: the data thread
+measures, the main thread reads. That needs none of the ring machinery — the
+value is one scalar and dropping an update costs nothing — so it is a plain
+relaxed store per block. The level is carried as float bits in an
+`_Atomic uint32_t`, not an `_Atomic double`, because 8-byte atomics are not
+lock-free on every target and nothing in `process()` may take a lock. The peak
+is held in dB so the fallback is a subtraction proportional to the block length
+and the only transcendental is one `log10` per block.
+
 Consequences for any new code:
 
 - **Never allocate, lock or block in `process()`.** Anything whose size depends
@@ -81,6 +90,15 @@ Consequences for any new code:
 through that, or a controller parsing stdout breaks. Multi-line help text is why
 `fput_prefixed()` exists. stdout is set line-buffered in `pwf_run()`; do not
 reintroduce a code path that writes without a newline and expects it to arrive.
+
+**It is also event-driven — a line appears because something changed or was
+asked for.** `in-level`/`out-level` are the sole exception and are therefore
+off by default (`meter 0`), so a consumer that never asks for them sees the
+stream it saw before they existed; `tests/protocol.py` guards both halves of
+that. Anything else periodic must be opt-in the same way. A change may emit
+more than one line (`lookahead` moves `latency`), so match echoes by name, not
+by position — `live.py:set()` is the reference for how a consumer should read
+this.
 
 **Latency is real and must be reported.** The lookahead filters delay their
 output by L samples and publish it as `SPA_PARAM_ProcessLatency` (the return

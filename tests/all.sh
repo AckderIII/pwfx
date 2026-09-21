@@ -36,9 +36,10 @@ step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
 # is 24 dB/oct x 3 = 72 dB, plus the extra the bilinear transform adds near
 # the top of the band.
-run python3 tests/live.py bin/pw_lpf -c 2 -f 1000 -n 4 \
+run python3 tests/live.py bin/pw_lpf -c 2 -f 1000 -n 4 --meter \
     -- "cutoff 1000" "cutoff 1000" "order 4" "order 4" \
        "cutoff 99999999" ERROR "order abc" ERROR "rate 44100" ERROR \
+       "in-level 0" ERROR \
     --audio "200,8000" "200=0+-0.6,8000=-72+-7"
 
 run python3 tests/live.py bin/pw_hpf -c 2 -f 1000 -n 4 \
@@ -77,7 +78,9 @@ run python3 tests/live.py bin/pw_comp -c 2 -t -30 -R 4 -w 0 -a 1 -e 200 -m 6 \
 run python3 tests/live.py bin/pw_limit -c 2 -C -1 -i 0 \
     -- "latency" "latency 252" --audio "1000" "1000=0+-0.3"
 # driven 20 dB in: the ceiling holds exactly, at both settings
-run python3 tests/live.py bin/pw_limit -c 2 -C -1 -i 20 \
+# --meter also pins out-level against the ceiling: the limiter's own meter
+# has to agree with what was recorded off its output ports
+run python3 tests/live.py bin/pw_limit -c 2 -C -1 -i 20 --meter \
     -- "oversample 3" ERROR "ceiling 3" ERROR \
     --audio "1000" "1000=9.46+-0.35" --peak "-1+-0.25"
 run python3 tests/live.py bin/pw_limit -c 2 -C -6 -i 20 -e 30 -k 10 \

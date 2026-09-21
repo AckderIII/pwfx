@@ -149,6 +149,35 @@ def main():
         check(got == good, "a rejected setting leaves the value alone",
               "got %r, wanted %r" % (got, good))
 
+        # Metering is the one thing that writes to stdout unasked, so the
+        # contract is that it is silent until switched on and silent again
+        # the moment it is switched off.
+        drain(f)
+        check(f.set("meter 100") == "meter 100", "meter can be switched on")
+        seen, end = 0, time.time() + 1.5
+        while time.time() < end:
+            l = f.line(0.5, skip_comments=True)
+            if l is None:
+                break
+            if l.split(" ")[0] in ("in-level", "out-level"):
+                seen += 1
+        check(seen >= 2, "armed meter reports a level straight away",
+              "%d level lines" % seen)
+
+        f.set("meter 0")
+        drain(f)
+        time.sleep(0.4)
+        stray = f.line(0.3, skip_comments=True)
+        check(stray is None, "meter 0 stops the reports", "got %r" % stray)
+
+        f.send("in-level -6")
+        e = f.errline(2.0)
+        check(e is not None and e.startswith("error:"),
+              "rejects a write to in-level (read-only)", str(e))
+        got = f.set("in-level")
+        check(got is not None and got.startswith("in-level "),
+              "but a bare in-level still queries it", "got %r" % got)
+
         rc = f.stop()
         check(rc == 0, "quit exits 0", "rc=%s" % rc)
         print()

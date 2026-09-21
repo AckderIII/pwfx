@@ -38,8 +38,18 @@
 /* Bypass is crossfaded rather than switched, so toggling it cannot click. */
 #define PWF_XFADE_MS  10.0
 
+/* Level floor. Below this is past float32 resolution anyway, and a finite
+ * number keeps the meters parseable by anything reading the protocol. */
+#define PWF_DB_FLOOR  (-240.0)
+
+/* How fast a peak meter falls back when the signal drops. Without a fallback
+ * the reported number is the maximum of whatever block happened to be under
+ * the timer, which flickers; with one it reads like a meter. */
+#define PWF_METER_FALL_DB_S 20.0
+
 enum {
     C_CHANNELS, C_RATE, C_LATENCY, C_BYPASS,
+    C_METER, C_IN_LEVEL, C_OUT_LEVEL,
     C_MAX_RATE, C_NODE_NAME, C_TARGET, C_NODE_LATENCY,
     C_N
 };
@@ -56,6 +66,17 @@ static const pwf_param core_template[C_N] = {
       .help = "latency this filter adds, reported to the graph" },
     { .name = "bypass", .type = PWF_BOOL, .def = 0,
       .help = "pass the input through, crossfaded over 10 ms" },
+    { .name = "meter", .type = PWF_INT,
+      .min = 0, .max = 10000, .def = 0, .unit = "ms",
+      .help = "how often to report in-level and out-level, 0 = off" },
+    { .name = "in-level", .type = PWF_DOUBLE,
+      .min = PWF_DB_FLOOR, .max = 60, .def = PWF_DB_FLOOR,
+      .flags = PWF_F_RO, .unit = "dB",
+      .help = "peak level arriving at the input ports, dBFS" },
+    { .name = "out-level", .type = PWF_DOUBLE,
+      .min = PWF_DB_FLOOR, .max = 60, .def = PWF_DB_FLOOR,
+      .flags = PWF_F_RO, .unit = "dB",
+      .help = "peak level leaving the output ports, dBFS" },
     { .name = "max-rate", .type = PWF_INT,
       .min = 8000, .max = 768000, .def = 192000, .flags = PWF_F_CLI, .unit = "Hz",
       .help = "highest rate to size delay lines for, at startup" },
@@ -96,6 +117,18 @@ struct pwf {
     _Atomic uint32_t rt_xfade;      /* crossfade length in samples */
     struct spa_source *rate_ev;
 
+    /* Meters run the other way to everything else here: the data thread
+     * measures and the main thread reads. One scalar each, and losing an
+     * update costs nothing, so a plain relaxed store is the whole channel --
+     * no ring, no sequence counter. Float bits rather than _Atomic double
+     * because an 8-byte atomic is not lock-free everywhere, and nothing in
+     * process() may take a lock. */
+    _Atomic uint32_t rt_meter;      /* nonzero while metering is on */
+    _Atomic uint32_t rt_in_level;   /* float bits, dBFS */
+    _Atomic uint32_t rt_out_level;  /* float bits, dBFS */
+    _Atomic uint32_t rt_fall;       /* float bits, dB of fallback per sample */
+    struct spa_source *meter_timer;
+
     struct spa_source *stdin_src;
     char   lbuf[4096];
     size_t llen;
@@ -108,7 +141,9 @@ struct pwf {
     uint32_t rt_last_pub;
     uint32_t rt_rate_seen;
     double   rt_mix;                /* 1 = fully processed, 0 = fully dry */
+    double   rt_in_db, rt_out_db;   /* held peaks */
 
+    int meter_first;                /* report once on arming, even if idle */
     int started;                    /* past the initial parameter dump */
     int quit;
 };
@@ -165,9 +200,48 @@ static void report(const pwf_param *p)
     fflush(stdout);
 }
 
+/* A float carried through an atomic as its bit pattern. */
+static uint32_t f2u(float f) { uint32_t u; memcpy(&u, &f, sizeof u); return u; }
+static float    u2f(uint32_t u) { float f; memcpy(&f, &u, sizeof f); return f; }
+
+/* Peak hold with a linear fallback in dB. Holding the level in dB rather
+ * than linear is what keeps this out of the per-sample path: the fallback is
+ * a subtraction proportional to the block length, and the only transcendental
+ * is one log per block. */
+static double meter_step(double held, float peak, double fall)
+{
+    double now = peak > 0.0f ? 20.0 * log10((double)peak) : PWF_DB_FLOOR;
+
+    held -= fall;
+    if (now > held)          held = now;
+    if (held < PWF_DB_FLOOR) held = PWF_DB_FLOOR;
+    return held;
+}
+
+/* Copy what the data thread last measured into the parameter table, rounded
+ * to a tenth of a dB so the reported number is a level and not a stream of
+ * meter noise. Returns nonzero if either value moved. */
+static int refresh_meters(struct pwf *s)
+{
+    double in  = u2f(atomic_load_explicit(&s->rt_in_level,  memory_order_relaxed));
+    double out = u2f(atomic_load_explicit(&s->rt_out_level, memory_order_relaxed));
+
+    in  = round(in  * 10.0) / 10.0;
+    out = round(out * 10.0) / 10.0;
+
+    if (in == s->core[C_IN_LEVEL].value && out == s->core[C_OUT_LEVEL].value)
+        return 0;
+
+    s->core[C_IN_LEVEL].value  = in;
+    s->core[C_OUT_LEVEL].value = out;
+    return 1;
+}
+
 static void report_all(struct pwf *s)
 {
     size_t i;
+
+    refresh_meters(s);
     for (i = 0; i < C_N; i++) report(&s->core[i]);
     for (i = 0; s->fp[i].name; i++) report(&s->fp[i]);
 }
@@ -306,18 +380,67 @@ static void design_into(struct pwf *s, uint32_t idx)
     }
 }
 
+/* Metering is periodic, and everything else on stdout is event-driven: a line
+ * appears because something changed or was asked for. So it is off unless
+ * asked for, and a consumer that never sets "meter" sees exactly the stream
+ * it saw before this existed. */
+static void arm_meter(struct pwf *s)
+{
+    struct timespec value = { 0, 0 }, interval = { 0, 0 };
+    long ms = (long)llround(s->core[C_METER].value);
+
+    atomic_store_explicit(&s->rt_meter, ms > 0, memory_order_relaxed);
+    /* Report once as soon as it is armed. Otherwise turning the meter on
+     * over a silent or steady signal produces nothing at all, which is
+     * indistinguishable from it not working. */
+    s->meter_first = ms > 0;
+    if (!s->meter_timer)
+        return;
+    if (ms > 0) {
+        value.tv_sec  = ms / 1000;
+        value.tv_nsec = (ms % 1000) * 1000000L;
+        interval = value;
+    }
+    pw_loop_update_timer(s->loop, s->meter_timer, &value, &interval, false);
+}
+
+static void on_meter_timer(void *data, uint64_t expirations)
+{
+    struct pwf *s = data;
+
+    (void)expirations;
+    if (!refresh_meters(s) && !s->meter_first)
+        return;                 /* nothing moved: an idle filter stays quiet */
+    s->meter_first = 0;
+    report(&s->core[C_IN_LEVEL]);
+    report(&s->core[C_OUT_LEVEL]);
+}
+
+/* The scalars the data thread reads outside the coefficient blob. All of
+ * them depend on the rate, so they are refreshed wherever the blob is. */
+static void publish_scalars(struct pwf *s)
+{
+    double rate = s->rate > 0.0 ? s->rate : 48000.0;
+
+    atomic_store_explicit(&s->rt_bypass,
+            s->core[C_BYPASS].value != 0, memory_order_relaxed);
+    atomic_store_explicit(&s->rt_xfade,
+            (uint32_t)(PWF_XFADE_MS * rate / 1000.0) + 1,
+            memory_order_relaxed);
+    atomic_store_explicit(&s->rt_fall,
+            f2u((float)(PWF_METER_FALL_DB_S / rate)), memory_order_relaxed);
+}
+
 static void publish(struct pwf *s)
 {
     uint32_t next = atomic_load_explicit(&s->pub, memory_order_relaxed) + 1;
     design_into(s, next);
     atomic_store_explicit(&s->pub, next, memory_order_release);
 
-    atomic_store_explicit(&s->rt_bypass,
-            s->core[C_BYPASS].value != 0, memory_order_relaxed);
-    atomic_store_explicit(&s->rt_xfade,
-            (uint32_t)(PWF_XFADE_MS * s->rate / 1000.0) + 1,
-            memory_order_relaxed);
+    publish_scalars(s);
+    arm_meter(s);
 }
+
 
 /* ---- applying a change -------------------------------------------------- */
 
@@ -385,7 +508,12 @@ static void command(struct pwf *s, char *line)
             pw_main_loop_quit(s->mloop);
             return;
         }
-        if ((par = find_param(s, name)) != NULL) { report(par); return; }
+        if ((par = find_param(s, name)) != NULL) {
+            if (par == &s->core[C_IN_LEVEL] || par == &s->core[C_OUT_LEVEL])
+                refresh_meters(s);
+            report(par);
+            return;
+        }
         err("unknown command '%s' (try 'help')", name);
         return;
     }
@@ -496,7 +624,8 @@ static void on_process(void *data, struct spa_io_position *position)
     float *base_in[PWF_MAX_CHANNELS], *base_out[PWF_MAX_CHANNELS];
     float *in[PWF_MAX_CHANNELS], *out[PWF_MAX_CHANNELS];
     const void *coeffs;
-    int changed;
+    int changed, meter;
+    float ipk = 0.0f, opk = 0.0f;
     double tgt, inc;
 
     if (total == 0) return;
@@ -522,6 +651,7 @@ static void on_process(void *data, struct spa_io_position *position)
 
     tgt = atomic_load_explicit(&s->rt_bypass, memory_order_relaxed) ? 0.0 : 1.0;
     inc = 1.0 / (double)atomic_load_explicit(&s->rt_xfade, memory_order_relaxed);
+    meter = atomic_load_explicit(&s->rt_meter, memory_order_relaxed) != 0;
 
     /* An unconnected port is served from the shared silence and discard
      * buffers, which are only PWF_MAX_QUANTUM long, so a quantum larger than
@@ -535,6 +665,20 @@ static void on_process(void *data, struct spa_io_position *position)
         for (i = 0; i < nch; i++) {
             in[i]  = base_in[i]  ? base_in[i]  + done : s->zero;
             out[i] = base_out[i] ? base_out[i] + done : s->sink;
+        }
+
+        /* An unconnected port reads from the shared silence buffer and an
+         * unconnected output is discarded into the shared scratch, so the
+         * meters look at base_*[] to tell a real port from a stand-in --
+         * metering the scratch would report audio nobody receives. */
+        if (meter) {
+            for (i = 0; i < nch; i++) {
+                if (!base_in[i]) continue;
+                for (j = 0; j < n; j++) {
+                    float a = fabsf(in[i][j]);
+                    if (a > ipk) ipk = a;
+                }
+            }
         }
 
         s->desc->process(s->desc->user, coeffs, changed, in, out, nch, n);
@@ -558,7 +702,32 @@ static void on_process(void *data, struct spa_io_position *position)
             s->rt_mix = mix;
         }
 
+        /* Measured after the crossfade, so out-level is the signal that
+         * actually leaves the node and bypass shows through it. */
+        if (meter) {
+            for (i = 0; i < nch; i++) {
+                if (!base_out[i]) continue;
+                for (j = 0; j < n; j++) {
+                    float a = fabsf(out[i][j]);
+                    if (a > opk) opk = a;
+                }
+            }
+        }
+
         done += n;
+    }
+
+    if (meter) {
+        double fall = (double)u2f(atomic_load_explicit(&s->rt_fall,
+                                                      memory_order_relaxed))
+                    * (double)total;
+
+        s->rt_in_db  = meter_step(s->rt_in_db,  ipk, fall);
+        s->rt_out_db = meter_step(s->rt_out_db, opk, fall);
+        atomic_store_explicit(&s->rt_in_level,  f2u((float)s->rt_in_db),
+                              memory_order_relaxed);
+        atomic_store_explicit(&s->rt_out_level, f2u((float)s->rt_out_db),
+                              memory_order_relaxed);
     }
 }
 
@@ -847,6 +1016,11 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
     atomic_init(&s.rt_xfade, 1);
     s.rt_last_pub = UINT32_MAX;
     s.rt_mix = 1.0;
+    s.rt_in_db = s.rt_out_db = PWF_DB_FLOOR;
+    atomic_init(&s.rt_meter, 0);
+    atomic_init(&s.rt_in_level,  f2u((float)PWF_DB_FLOOR));
+    atomic_init(&s.rt_out_level, f2u((float)PWF_DB_FLOOR));
+    atomic_init(&s.rt_fall, f2u(0.0f));
 
     if ((res = parse_argv(&s, argc, argv, &check)) != 0)
         return res > 0 ? 0 : 2;
@@ -873,11 +1047,7 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
     /* Slot 0 has to be valid before the data thread ever runs. */
     design_into(&s, 0);
     atomic_store_explicit(&s.pub, 0, memory_order_release);
-    atomic_store_explicit(&s.rt_bypass,
-            s.core[C_BYPASS].value != 0, memory_order_relaxed);
-    atomic_store_explicit(&s.rt_xfade,
-            (uint32_t)(PWF_XFADE_MS * s.rate / 1000.0) + 1,
-            memory_order_relaxed);
+    publish_scalars(&s);
 
     s.started = 1;
     report_all(&s);
@@ -901,6 +1071,8 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
     pw_loop_add_signal(s.loop, SIGINT,  on_signal, &s);
     pw_loop_add_signal(s.loop, SIGTERM, on_signal, &s);
     s.rate_ev   = pw_loop_add_event(s.loop, on_rate_event, &s);
+    s.meter_timer = pw_loop_add_timer(s.loop, on_meter_timer, &s);
+    arm_meter(&s);
     s.stdin_src = pw_loop_add_io(s.loop, STDIN_FILENO, SPA_IO_IN, false,
                                  on_stdin, &s);
     if (!s.stdin_src)
