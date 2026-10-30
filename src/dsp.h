@@ -333,7 +333,8 @@ static inline void biquad_peak_orfanidis(biquad_t *c, double f0, double fs,
     c->a2 = (1.0 + W2 - Aa)       / den;
 }
 
-/* Magnitude of one section at f, used by the self-test tools. */
+/* Magnitude of one section at f: the self-test tools, and the response
+ * curves the filters draw from their own coefficients. */
 static inline double biquad_mag_db(const biquad_t *c, double f, double fs)
 {
     double w = 2.0 * M_PI * f / fs;
@@ -346,6 +347,27 @@ static inline double biquad_mag_db(const biquad_t *c, double f, double fs)
     double n  = nr * nr + ni * ni, d = dr * dr + di * di;
     if (d <= 0.0) return -999.0;
     return 10.0 * log10(n / d);
+}
+
+/* Magnitude of a first-order section at f. */
+static inline double onepole_mag_db(const onepole_t *c, double f, double fs)
+{
+    double w = 2.0 * M_PI * f / fs;
+    double nr = c->b0 + c->b1 * cos(w), ni = -c->b1 * sin(w);
+    double dr = 1.0   + c->a1 * cos(w), di = -c->a1 * sin(w);
+    double n  = nr * nr + ni * ni, d = dr * dr + di * di;
+    if (d <= 0.0) return -999.0;
+    return 10.0 * log10(n / d);
+}
+
+/* Magnitude of a whole Butterworth cascade at f: what the filter does, from
+ * the coefficients it runs, for the response curve. */
+static inline double butter_mag_db(const butter_t *d, double f, double fs)
+{
+    double db = d->has_first ? onepole_mag_db(&d->first, f, fs) : 0.0;
+    int k;
+    for (k = 0; k < d->nsections; k++) db += biquad_mag_db(&d->sec[k], f, fs);
+    return db;
 }
 
 /* Scrub non-finite input. A recursive filter has no way back from a NaN or

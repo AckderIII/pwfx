@@ -112,6 +112,15 @@ more than one line (`lookahead` moves `latency`), so match echoes by name, not
 by position — `live.py:set()` is the reference for how a consumer should read
 this.
 
+**Response curves come from the filter, never from a second model of it.** A
+filter that sets `pwf_desc.curve` evaluates the very blob `design()` filled
+and prints it on request (`curve` on stdin, `--curve` offline); the app only
+plots the points. A new filter with a curve shows one in the GUI with no Rust
+changes, and a curve cannot drift from the sound because there is nothing to
+drift. The points are a path in drawing order -- the gate's is a loop -- so do
+not sort them. `tests/curves.py` checks each against theory, not against its
+own output.
+
 **Latency is real and must be reported.** The lookahead filters delay their
 output by L samples and publish it as `SPA_PARAM_ProcessLatency` (the return
 value of `design()`), so the graph compensates. Changing a lookahead live steps

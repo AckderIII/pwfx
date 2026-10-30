@@ -133,6 +133,18 @@ static void hpf_process(void *user, const void *coeffs, int changed,
     }
 }
 
+/* The response of the cascade actually running, from its coefficients. */
+static size_t hpf_curve(void *user, const void *coeffs, double rate,
+                        double *x, double *y, size_t max)
+{
+    const hpf_coeffs *c = coeffs;
+    size_t i, n = pwf_freq_grid(rate, x, max);
+
+    (void)user;
+    for (i = 0; i < n; i++) y[i] = butter_mag_db(&c->b, x[i], rate);
+    return n;
+}
+
 int main(int argc, char **argv)
 {
     static hpf_state state;
@@ -153,6 +165,8 @@ int main(int argc, char **argv)
         .validate   = hpf_validate,
         .design     = hpf_design,
         .process    = hpf_process,
+        .curve_kind = PWF_CURVE_FREQ,
+        .curve      = hpf_curve,
         .user       = &state,
     };
     return pwf_run(&desc, argc, argv);

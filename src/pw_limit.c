@@ -96,6 +96,21 @@ static double limit_pw_gr(void *user, const void *coeffs)
     return limit_take_gr(user);
 }
 
+/* The static curve: input gain, then nothing over the ceiling. */
+static size_t limit_pw_curve(void *user, const void *coeffs, double rate,
+                             double *x, double *y, size_t max)
+{
+    const limit_coeffs *c = coeffs;
+    double in_db   = DSP_LOG10_20 * log(c->in_lin);
+    double ceil_db = DSP_LOG10_20 * log(c->ceil_lin);
+    size_t i, n = pwf_level_grid(x, max);
+
+    (void)user; (void)rate;
+    for (i = 0; i < n; i++)
+        y[i] = x[i] + in_db < ceil_db ? x[i] + in_db : ceil_db;
+    return n;
+}
+
 int main(int argc, char **argv)
 {
     static limit_state state;
@@ -130,6 +145,8 @@ int main(int argc, char **argv)
         .design     = limit_pw_design,
         .process    = limit_pw_process,
         .gain_reduction = limit_pw_gr,
+        .curve_kind = PWF_CURVE_LEVEL,
+        .curve      = limit_pw_curve,
         .user       = &state,
     };
     return pwf_run(&desc, argc, argv);

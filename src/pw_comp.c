@@ -147,6 +147,21 @@ static double comp_pw_gr(void *user, const void *coeffs)
     return comp_take_gr(user);
 }
 
+/* The static curve: output level for a steady input level, makeup
+ * included. Attack, release, RMS and the sidechain filters shape how fast
+ * and on what it gets there, not where it ends up. */
+static size_t comp_pw_curve(void *user, const void *coeffs, double rate,
+                            double *x, double *y, size_t max)
+{
+    const comp_coeffs *c = coeffs;
+    size_t i, n = pwf_level_grid(x, max);
+
+    (void)user; (void)rate;
+    for (i = 0; i < n; i++)
+        y[i] = comp_curve_db(x[i], c->thr_db, c->ratio, c->knee) + c->makeup_db;
+    return n;
+}
+
 int main(int argc, char **argv)
 {
     static comp_state state;
@@ -182,6 +197,8 @@ int main(int argc, char **argv)
         .design     = comp_pw_design,
         .process    = comp_pw_process,
         .gain_reduction = comp_pw_gr,
+        .curve_kind = PWF_CURVE_LEVEL,
+        .curve      = comp_pw_curve,
         .user       = &state,
     };
     return pwf_run(&desc, argc, argv);

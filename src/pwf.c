@@ -490,6 +490,58 @@ static int apply(struct pwf *s, pwf_param *p, double v, const char *sv)
     return 0;
 }
 
+/* ---- response curves ---------------------------------------------------- */
+
+#define PWF_CURVE_FREQ_POINTS 160
+
+size_t pwf_freq_grid(double rate, double *x, size_t max)
+{
+    double lo = 20.0, hi = 20000.0;
+    size_t i, n = PWF_CURVE_FREQ_POINTS < max ? PWF_CURVE_FREQ_POINTS : max;
+
+    if (rate > 0.0 && hi > rate * 0.49) hi = rate * 0.49;
+    for (i = 0; i < n; i++)
+        x[i] = lo * pow(hi / lo, (double)i / (double)(n - 1));
+    return n;
+}
+
+size_t pwf_level_grid(double *x, size_t max)
+{
+    size_t i;
+    for (i = 0; i < max && i <= 96; i++)
+        x[i] = -90.0 + (double)i;
+    return i;
+}
+
+/* One line: "curve freq 20:0.00,21.0:0.00,...". A single name-value line
+ * like every other, so a consumer that never asks never sees one, and one
+ * that does can match it by name. y is kept finite -- a closed gate snapped
+ * to silence has no number of dB -- by the same floor the meters use. */
+static void print_curve(struct pwf *s, const void *coeffs)
+{
+    double x[PWF_CURVE_MAX], y[PWF_CURVE_MAX];
+    double rate = s->rate > 0.0 ? s->rate : s->core[C_RATE].def;
+    size_t i, n = s->desc->curve(s->desc->user, coeffs, rate, x, y, PWF_CURVE_MAX);
+
+    printf("curve %s", s->desc->curve_kind == PWF_CURVE_LEVEL ? "level" : "freq");
+    for (i = 0; i < n; i++) {
+        double v = y[i];
+        if (!isfinite(v) || v < PWF_DB_FLOOR) v = PWF_DB_FLOOR;
+        if (fabs(v) < 0.005) v = 0.0;       /* no "-0.00" */
+        printf("%c%.6g:%.2f", i ? ',' : ' ', x[i], v);
+    }
+    printf("\n");
+}
+
+/* The coefficients last published, which on the main thread -- the one
+ * that writes them -- are always safe to read. */
+static const void *current_coeffs(struct pwf *s)
+{
+    uint32_t pub = atomic_load_explicit(&s->pub, memory_order_relaxed);
+    return s->slots + (size_t)(pub % PWF_SLOTS) * s->desc->coeff_size;
+}
+
+
 /* ---- the stdin control protocol ---------------------------------------- */
 
 static void usage(struct pwf *s, FILE *f, const char *prefix);
@@ -526,6 +578,10 @@ static void command(struct pwf *s, char *line)
             return;
         }
         if (!strcmp(name, "help")) { usage(s, stdout, "# "); return; }
+        if (!strcmp(name, "curve") && s->desc->curve) {
+            print_curve(s, current_coeffs(s));
+            return;
+        }
         if (!strcmp(name, "quit") || !strcmp(name, "exit")) {
             s->quit = 1;
             pw_main_loop_quit(s->mloop);
@@ -897,7 +953,17 @@ static void usage(struct pwf *s, FILE *f, const char *prefix)
 "%s\n"
 "%s  -h, --help                 this text\n"
 "%s      --check                validate the settings, print them, and exit\n"
-"%s                             without connecting to PipeWire\n"
+"%s                             without connecting to PipeWire\n",
+        prefix, prefix, prefix, prefix);
+    /* Only on a filter that has one: it is also how a consumer finds out. */
+    if (s->desc->curve)
+        fprintf(f,
+"%s      --curve                print the %s curve and exit, without\n"
+"%s                             connecting to PipeWire\n",
+            prefix, s->desc->curve_kind == PWF_CURVE_LEVEL
+                    ? "input-to-output level" : "frequency response", prefix);
+
+    fprintf(f,
 "%s\n"
 "%scontrol protocol\n"
 "%s  On start every parameter is printed to stdout as one \"name value\" line.\n"
@@ -908,7 +974,11 @@ static void usage(struct pwf *s, FILE *f, const char *prefix)
 "%s  writes to stdout is either a \"name value\" line or a #-comment; errors go\n"
 "%s  to stderr and leave the parameter unchanged.\n",
         prefix, prefix, prefix, prefix, prefix, prefix, prefix, prefix,
-        prefix, prefix, prefix, prefix, prefix);
+        prefix);
+    if (s->desc->curve)
+        fprintf(f,
+"%s  \"curve\" prints the response as one \"curve KIND X:Y,X:Y,...\" line, the\n"
+"%s  points in drawing order.\n", prefix, prefix);
 
     if (s->desc->notes && *s->desc->notes) {
         fprintf(f, "%s\n", prefix);
@@ -931,6 +1001,7 @@ static int parse_argv(struct pwf *s, int argc, char **argv, int *check)
             return 1;
         }
         if (!strcmp(a, "--check")) { *check = 1; continue; }
+        if (!strcmp(a, "--curve") && s->desc->curve) { *check = 2; continue; }
 
         if (a[0] == '-' && a[1] == '-') {
             char *eq = strchr(a + 2, '=');
@@ -1093,6 +1164,11 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
     design_into(&s, 0);
     atomic_store_explicit(&s.pub, 0, memory_order_release);
     publish_scalars(&s);
+
+    if (check == 2) {
+        print_curve(&s, s.slots);
+        goto done;
+    }
 
     s.started = 1;
     report_all(&s);

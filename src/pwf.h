@@ -85,6 +85,16 @@ typedef struct {
 
 struct pwf;
 
+/* What a response curve's axes are. */
+typedef enum {
+    PWF_CURVE_NONE = 0,
+    PWF_CURVE_FREQ,       /* x = frequency in Hz, y = gain in dB */
+    PWF_CURVE_LEVEL       /* x = input level in dB, y = output level in dB */
+} pwf_curve_kind;
+
+/* The most points a curve can have. */
+#define PWF_CURVE_MAX 256
+
 typedef struct {
     const char *name;         /* program and default node name, "pw_lpf" */
     const char *summary;      /* one line, shown at the top of --help */
@@ -127,6 +137,15 @@ typedef struct {
      * in-level and out-level; one that leaves it NULL does not have one. */
     double (*gain_reduction)(void *user, const void *coeffs);
 
+    /* Optional, main thread: the response the coefficients produce, for
+     * drawing. Fill x[] and y[] with up to max points and return how many.
+     * The points are a path in drawing order, not a function of x -- a
+     * gate's hysteresis is a loop. A filter that sets this answers "curve"
+     * on stdin and --curve on the command line, and says so in --help. */
+    pwf_curve_kind curve_kind;
+    size_t (*curve)(void *user, const void *coeffs, double rate,
+                    double *x, double *y, size_t max);
+
     void *user;
 } pwf_desc;
 
@@ -137,6 +156,13 @@ int pwf_run(pwf_desc *desc, int argc, char **argv);
  * both abort on an unknown name, since the table is a compile-time thing. */
 double      pwf_value(const pwf_param *p, const char *name);
 const char *pwf_string(const pwf_param *p, const char *name);
+
+/* The x axes the curve callbacks share, so every curve of one kind is drawn
+ * against the same grid. Both return how many points they wrote.
+ *   frequency: log-spaced from 20 Hz to 20 kHz, or to just under Nyquist;
+ *   level:     -90 to +6 dB in 1 dB steps. */
+size_t pwf_freq_grid(double rate, double *x, size_t max);
+size_t pwf_level_grid(double *x, size_t max);
 
 #ifdef __cplusplus
 }

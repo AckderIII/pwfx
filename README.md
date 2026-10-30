@@ -161,6 +161,39 @@ keep taking their block's reduction, one comparison per sample in the core,
 so that turning the meter on reports the present rather than the worst
 moment since startup.
 
+### Response curves
+
+Every filter can say what it does, computed from the coefficients it is
+actually running -- not from a second model of it. Ask on stdin:
+
+```
+curve
+curve freq 20:0.00,20.8881:0.00,21.8155:0.00,...
+```
+
+or get the same line without PipeWire, for whatever the command line sets:
+
+```sh
+./bin/pw_lpf -f 1000 -n 4 --curve
+```
+
+One `name value` line like any other, sent only when asked for. The kind
+is the axes:
+
+- `freq`: `HZ:DB` pairs, log-spaced from 20 Hz to 20 kHz (or to just under
+  Nyquist), for `pw_lpf`, `pw_hpf` and `pw_eq`. The EQ's is the sum of the
+  bands that are on, so a band switched off by a rate change is missing
+  from the curve as it is from the sound.
+- `level`: `IN:OUT` pairs in dB, -90 to +6, the static curve of `pw_comp`
+  (makeup included), `pw_gate` and `pw_limit` -- where a steady input ends
+  up, not how fast it gets there.
+
+The points are a path, in drawing order. For most filters that is one y per
+x, but a gate's is a loop: up the closed line to the threshold, up to open,
+to the top, back down the open line to `threshold - hysteresis`, and down
+to closed. Drawn in order, that is its hysteresis. A filter lists `--curve`
+in its `--help` exactly when it has one.
+
 Driving one from a script:
 
 ```sh
@@ -290,6 +323,9 @@ geometry moved.
 ```
 tests/run.sh       DSP cores vs. reference/, byte for byte, plus a check
                    that the limiter's ceiling is never breached
+tests/curves.py    every filter's --curve against theory: the bilinear
+                   Butterworth response point for point, the compressor's
+                   and limiter's static curves, the gate's loop
 tests/protocol.py  the stdin/stdout contract
 tests/live.py      one filter in the real graph: node and ports, live
                    parameter changes, reported latency, and the measured

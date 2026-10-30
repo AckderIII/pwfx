@@ -218,6 +218,25 @@ static void eq_process(void *user, const void *coeffs, int changed,
     }
 }
 
+/* The sum of the bands that are on, from their coefficients -- so a band
+ * skipped for sitting above Nyquist after a rate change is missing from the
+ * curve exactly as it is missing from the sound. */
+static size_t eq_curve(void *user, const void *coeffs, double rate,
+                       double *x, double *y, size_t max)
+{
+    const eq_coeffs *c = coeffs;
+    size_t i, n = pwf_freq_grid(rate, x, max);
+    int k;
+
+    (void)user;
+    for (i = 0; i < n; i++) {
+        y[i] = 0.0;
+        for (k = 0; k < NBANDS; k++)
+            if (c->on[k]) y[i] += biquad_mag_db(&c->sec[k], x[i], rate);
+    }
+    return n;
+}
+
 int main(int argc, char **argv)
 {
     static eq_state state;
@@ -249,6 +268,8 @@ int main(int argc, char **argv)
         .validate   = eq_validate,
         .design     = eq_design,
         .process    = eq_process,
+        .curve_kind = PWF_CURVE_FREQ,
+        .curve      = eq_curve,
         .user       = &state,
     };
     return pwf_run(&desc, argc, argv);

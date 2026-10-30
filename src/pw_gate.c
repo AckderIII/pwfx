@@ -127,6 +127,46 @@ static double gate_pw_gr(void *user, const void *coeffs)
     return gate_take_gr(user, coeffs);
 }
 
+/* The static curve, which for a gate is a loop. Rising, it stays shut --
+ * the range down -- until the open threshold, then passes; falling, it
+ * stays open down to the close threshold, then shuts. So the path runs up
+ * the closed line, jumps at "threshold", runs to the top, comes back down
+ * the open line and drops at "threshold - hysteresis": drawn in order, the
+ * hysteresis is the part of the open line that is only open on the way
+ * down. Hold and the ramps are time, not level, and are not on it. */
+static size_t gate_pw_curve(void *user, const void *coeffs, double rate,
+                            double *x, double *y, size_t max)
+{
+    const gate_coeffs *c = coeffs;
+    double grid[PWF_CURVE_MAX];
+    double open_db  = DSP_LOG10_20 * log(c->open_lin);
+    double close_db = DSP_LOG10_20 * log(c->close_lin);
+    size_t i, k = 0, g = pwf_level_grid(grid, PWF_CURVE_MAX);
+
+    (void)user; (void)rate;
+    /* A point the same as the last is dropped: the thresholds often sit on
+     * the grid, and the turn at the top would otherwise be there twice. */
+#define GATE_PT(px, py) do { \
+        double px_ = (px), py_ = (py); \
+        if (k < max && !(k > 0 && fabs(x[k - 1] - px_) < 1e-9 && \
+                                  fabs(y[k - 1] - py_) < 1e-9)) { \
+            x[k] = px_; y[k] = py_; k++; \
+        } \
+    } while (0)
+    for (i = 0; i < g && grid[i] < open_db; i++)
+        GATE_PT(grid[i], grid[i] - c->range_db);
+    GATE_PT(open_db, open_db - c->range_db);
+    GATE_PT(open_db, open_db);
+    for (; i < g; i++)
+        GATE_PT(grid[i], grid[i]);
+    for (i = g; i-- > 0 && grid[i] > close_db; )
+        GATE_PT(grid[i], grid[i]);
+    GATE_PT(close_db, close_db);
+    GATE_PT(close_db, close_db - c->range_db);
+#undef GATE_PT
+    return k;
+}
+
 int main(int argc, char **argv)
 {
     static gate_state state;
@@ -156,6 +196,8 @@ int main(int argc, char **argv)
         .design     = gate_pw_design,
         .process    = gate_pw_process,
         .gain_reduction = gate_pw_gr,
+        .curve_kind = PWF_CURVE_LEVEL,
+        .curve      = gate_pw_curve,
         .user       = &state,
     };
     return pwf_run(&desc, argc, argv);
