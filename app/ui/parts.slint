@@ -1,4 +1,4 @@
-import { Theme, Btn, Toggle, Meter } from "theme.slint";
+import { Theme, Btn, Toggle, Meter, GrMeter } from "theme.slint";
 import { Slider, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 
 // One knob of one filter.
@@ -33,15 +33,19 @@ export struct StageRow {
     params: [ParamRow],
 }
 
-/// A stage's two meter readings: the level for the bar, and the figure to
-/// print beside it. The text comes from Rust rather than being formatted
-/// here so that the floor the filters report -- -240 dB, meaning nothing at
-/// all -- can be shown as nothing rather than as a number.
+/// A stage's meter readings: the level for the bar, and the figure to print
+/// beside it. The text comes from Rust rather than being formatted here so
+/// that the floor the filters report -- -240 dB, meaning nothing at all --
+/// can be shown as nothing rather than as a number. The gain reduction is
+/// only there for a filter that reports one.
 export struct LevelRow {
     in-db: float,
     in-text: string,
     out-db: float,
     out-text: string,
+    has-gr: bool,
+    gr-db: float,
+    gr-text: string,
 }
 
 export struct ChainRow {
@@ -356,17 +360,25 @@ component LevelStrip inherits HorizontalLayout {
     in property <float> db;
     in property <string> text;
     in property <bool> live;
+    // A gain-reduction strip rather than a level: dB pulled down, not dBFS.
+    in property <bool> reduction: false;
 
     spacing: 6px;
 
-    Text {
+    caption := Text {
         text: root.label;
         width: 22px;
         font-size: Theme.fs-small;
         color: Theme.text-faint;
         vertical-alignment: center;
     }
-    Meter {
+    if !root.reduction : Meter {
+        horizontal-stretch: 1;
+        y: 6px;
+        db: root.db;
+        live: root.live;
+    }
+    if root.reduction : GrMeter {
         horizontal-stretch: 1;
         y: 6px;
         db: root.db;
@@ -375,12 +387,13 @@ component LevelStrip inherits HorizontalLayout {
     // Monospaced and right-aligned: a peak meter's figure moves several
     // times a second, and proportional digits make it jitter sideways while
     // you are trying to read it.
-    Text {
+    figure := Text {
         text: root.text;
         width: 40px;
         font-family: "monospace";
         font-size: Theme.fs-small;
-        color: Theme.level-color(root.db, root.live);
+        color: root.reduction ? (root.live ? Theme.accent : Theme.text-faint)
+                              : Theme.level-color(root.db, root.live);
         horizontal-alignment: right;
         vertical-alignment: center;
     }
@@ -472,21 +485,34 @@ export component StageCard inherits Rectangle {
             }
         }
 
-        if root.metering : HorizontalLayout {
-            spacing: 18px;
-            LevelStrip {
-                horizontal-stretch: 1;
-                label: "in";
-                db: root.level.in-db;
-                text: root.level.in-text;
-                live: root.s.running;
+        if root.metering : VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 18px;
+                LevelStrip {
+                    horizontal-stretch: 1;
+                    label: "in";
+                    db: root.level.in-db;
+                    text: root.level.in-text;
+                    live: root.s.running;
+                }
+                LevelStrip {
+                    horizontal-stretch: 1;
+                    label: "out";
+                    db: root.level.out-db;
+                    text: root.level.out-text;
+                    live: root.s.running;
+                }
             }
-            LevelStrip {
-                horizontal-stretch: 1;
-                label: "out";
-                db: root.level.out-db;
-                text: root.level.out-text;
-                live: root.s.running;
+            // Its own row, the full width of the two above: it is a
+            // different kind of reading, and its figure lines up under the
+            // out figure at the right edge.
+            if root.level.has-gr : LevelStrip {
+                label: "gr";
+                reduction: true;
+                db: root.level.gr-db;
+                text: root.level.gr-text;
+                live: root.s.running && !root.s.bypass;
             }
         }
 

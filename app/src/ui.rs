@@ -116,6 +116,19 @@ pub fn level_text(db: f32) -> String {
     }
 }
 
+/// The figure printed beside a gain-reduction meter.
+///
+/// Negative, the way a compressor's meter is marked: it is how far the level
+/// is being pulled down. No reduction is a reading -- the filter is there and
+/// doing nothing to this signal -- so it is printed as one, not as a dash.
+pub fn gr_text(db: f32) -> String {
+    if !db.is_finite() || db < 0.05 {
+        "0.0".into()
+    } else {
+        format!("-{db:.1}")
+    }
+}
+
 /// Below this a reading is treated as silence. Well under anything audible,
 /// and well above the filters' own -240 floor, so a meter decaying after a
 /// signal stops still shows figures on the way down.
@@ -215,6 +228,18 @@ mod tests {
             let db = -120.0 + i as f32 * 0.1;
             assert!(level_text(db).len() <= 6, "{db} -> {}", level_text(db));
         }
+    }
+
+    #[test]
+    fn gain_reduction_reads_as_a_cut() {
+        assert_eq!(gr_text(14.66), "-14.7");
+        assert_eq!(gr_text(0.0), "0.0");
+        // Under what the filter's own rounding can report: no reduction,
+        // not a "-0.0".
+        assert_eq!(gr_text(0.04), "0.0");
+        assert_eq!(gr_text(f32::NAN), "0.0");
+        // A gate snapped shut at its range, in the same column.
+        assert!(gr_text(120.0).len() <= 6);
     }
 
     #[test]

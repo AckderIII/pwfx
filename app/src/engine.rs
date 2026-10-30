@@ -66,6 +66,8 @@ pub struct Runtime {
     pub reported: BTreeMap<String, String>,
     pub in_level: f32,
     pub out_level: f32,
+    /// Gain reduction, dB >= 0, from filters that have a `gr` meter.
+    pub gr: f32,
     pub latency: u32,
     pub last_error: String,
 }
@@ -435,6 +437,7 @@ impl Engine {
                 match name.as_str() {
                     "in-level" => rt.in_level = value.parse().unwrap_or(-240.0),
                     "out-level" => rt.out_level = value.parse().unwrap_or(-240.0),
+                    "gr" => rt.gr = value.parse().unwrap_or(0.0),
                     "latency" => {
                         rt.latency = value.parse().unwrap_or(0);
                         rt.reported.insert(name, value);

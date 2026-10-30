@@ -574,6 +574,18 @@ mod against_the_real_filters {
             }
             assert!(d.param("channels").unwrap().cli_only);
             assert!(d.param("latency").unwrap().readonly);
+
+            // A gain-reduction meter on exactly the filters that reduce
+            // gain, read-only and so never a knob. The window draws the
+            // strip off this, so it must not appear on a low-pass.
+            let dynamics = ["pw_gate", "pw_comp", "pw_limit"].contains(&d.name.as_str());
+            match d.param("gr") {
+                Some(gr) => {
+                    assert!(dynamics, "{} has a gr meter", d.name);
+                    assert!(gr.readonly && !gr.live());
+                }
+                None => assert!(!dynamics, "{} has no gr meter", d.name),
+            }
             assert!(matches!(d.param("bypass").unwrap().kind, ParamKind::Bool));
 
             // Nothing may come back with a range a slider cannot sit on.

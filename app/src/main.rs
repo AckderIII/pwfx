@@ -691,9 +691,16 @@ impl App {
                 .zip(&m.params)
                 .map(|(s, p)| stage_row(&e, chain, s, ModelRc::from(p.clone())))
                 .collect();
-            let n = rows.len();
             let stages = Rc::new(VecModel::from(rows));
-            let levels = Rc::new(VecModel::from(vec![level_row(-240.0, -240.0); n]));
+            // Whether the gr strip is there is part of the shape: it is
+            // decided once, here, and refresh_meters only moves the figures.
+            let levels = Rc::new(VecModel::from(
+                chain
+                    .stages
+                    .iter()
+                    .map(|s| level_row(-240.0, -240.0, has_gr(&e, s).then_some(0.0)))
+                    .collect::<Vec<_>>(),
+            ));
 
             win.set_stages(ModelRc::from(stages.clone()));
             win.set_levels(ModelRc::from(levels.clone()));
@@ -785,11 +792,9 @@ impl App {
             return;
         };
         for (i, s) in chain.stages.iter().enumerate() {
-            let (a, b) = e
-                .runtime(&chain.node_name(s))
-                .map(|r| (r.in_level, r.out_level))
-                .unwrap_or((-240.0, -240.0));
-            let row = level_row(a, b);
+            let rt = e.runtime(&chain.node_name(s));
+            let (a, b) = rt.map(|r| (r.in_level, r.out_level)).unwrap_or((-240.0, -240.0));
+            let row = level_row(a, b, has_gr(&e, s).then(|| rt.map_or(0.0, |r| r.gr)));
             if levels.row_data(i).as_ref() != Some(&row) {
                 levels.set_row_data(i, row);
             }
@@ -833,13 +838,25 @@ impl Models {
     }
 }
 
-fn level_row(in_db: f32, out_db: f32) -> LevelRow {
+/// `gr` is `None` for a filter with no gain-reduction meter, which then
+/// shows no strip for one rather than one that always reads nothing.
+fn level_row(in_db: f32, out_db: f32, gr: Option<f32>) -> LevelRow {
     LevelRow {
         in_db,
         in_text: ui::level_text(in_db).into(),
         out_db,
         out_text: ui::level_text(out_db).into(),
+        has_gr: gr.is_some(),
+        gr_db: gr.unwrap_or(0.0),
+        gr_text: ui::gr_text(gr.unwrap_or(0.0)).into(),
     }
+}
+
+/// Whether a stage's filter has a gain-reduction meter. Learned from its
+/// `--help` like every other parameter, so a new dynamics filter gets one
+/// with no change here.
+fn has_gr(e: &Engine, stage: &Stage) -> bool {
+    e.plugin(&stage.plugin).is_some_and(|d| d.param("gr").is_some())
 }
 
 fn strings(v: &[String]) -> ModelRc<SharedString> {
@@ -1820,7 +1837,7 @@ mod window_tests {
             error: "".into(),
             params: ModelRc::new(VecModel::from(params)),
         }])));
-        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-240.0, -240.0)])));
+        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-240.0, -240.0, None)])));
         win
     }
 
@@ -1878,6 +1895,7 @@ mod window_tests {
             the_bus_pane_comes_up_and_commits_its_name().await;
             a_picker_never_runs_into_the_control_beside_it().await;
             the_refusal_dialog_wraps_and_closes().await;
+            a_gr_strip_shows_only_where_there_is_a_reduction().await;
             slint::quit_event_loop().unwrap();
         })
         .unwrap();
@@ -2055,6 +2073,54 @@ mod window_tests {
             .single_click(PointerEventButton::Left)
             .await;
         assert!(dismissed.get(), "OK dismisses the dialog");
+        win.hide().unwrap();
+    }
+
+    /// The third meter strip is there for a dynamics filter and absent for
+    /// the rest, rather than an always-empty strip on every stage.
+    async fn a_gr_strip_shows_only_where_there_is_a_reduction() {
+        let captions = |win: &AppWindow| -> Vec<String> {
+            testing::ElementHandle::find_by_element_id(win, "LevelStrip::caption")
+                .filter_map(|e| e.accessible_label().map(|s| s.to_string()))
+                .collect()
+        };
+
+        let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
+        win.set_metering(true);
+        show(&win);
+        settle(&win).await;
+        assert_eq!(captions(&win), ["in", "out"]);
+
+        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-12.0, -20.0, Some(8.0))])));
+        settle(&win).await;
+        assert_eq!(captions(&win), ["in", "out", "gr"]);
+        let figures: Vec<String> = testing::ElementHandle::find_by_element_id(&win, "LevelStrip::figure")
+            .filter_map(|e| e.accessible_label().map(|s| s.to_string()))
+            .collect();
+        assert!(figures.contains(&"-8.0".to_string()), "{figures:?}");
+
+        // Below in and out, on a row of its own, with its figure in the same
+        // right-hand column as out's.
+        let by_caption = |name: &str| {
+            testing::ElementHandle::find_by_element_id(&win, "LevelStrip::caption")
+                .find(|e| e.accessible_label().as_deref() == Some(name))
+                .unwrap()
+        };
+        let (inn, out, gr) = (by_caption("in"), by_caption("out"), by_caption("gr"));
+        assert_eq!(inn.absolute_position().y, out.absolute_position().y);
+        assert!(gr.absolute_position().y >= inn.absolute_position().y + inn.size().height,
+                "gr sits below in and out");
+        assert_eq!(gr.absolute_position().x, inn.absolute_position().x,
+                   "and starts in the same column as in");
+        let figure = |text: &str| {
+            testing::ElementHandle::find_by_element_id(&win, "LevelStrip::figure")
+                .find(|e| e.accessible_label().as_deref() == Some(text))
+                .unwrap()
+        };
+        let (out_fig, gr_fig) = (figure("-20.0"), figure("-8.0"));
+        let right = |e: &testing::ElementHandle| e.absolute_position().x + e.size().width;
+        assert!((right(&out_fig) - right(&gr_fig)).abs() < 0.5,
+                "the gr figure lines up under the out figure");
         win.hide().unwrap();
     }
 

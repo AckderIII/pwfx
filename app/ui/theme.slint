@@ -123,6 +123,32 @@ export component Toggle inherits Rectangle {
 // the width, because that is the part being watched. Below -60 the bar is
 // simply empty -- the filters floor at -240 and a linear dB scale down there
 // would make silence look like a reading.
+// How far a dynamics filter is pulling the level down. It grows from the
+// right, the way a compressor's needle falls, and in the accent colour rather
+// than the level colours, so it cannot be read as a level at a glance. The
+// scale is 24 dB: more than a vocal compressor works at, and a gate or a
+// hard-driven limiter simply pins it, which is what they are doing.
+export component GrMeter inherits Rectangle {
+    in property <float> db: 0;
+    in property <bool> live: false;
+
+    property <float> norm: max(0, min(1, root.db / 24));
+
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.bg-sunken;
+    clip: true;
+
+    Rectangle {
+        x: parent.width * (1 - root.norm);
+        width: parent.width * root.norm;
+        height: 100%;
+        border-radius: 3px;
+        background: root.live ? Theme.accent : Theme.text-faint;
+        animate x, width { duration: 60ms; easing: ease-out; }
+    }
+}
+
 export component Meter inherits Rectangle {
     in property <float> db: -240;
     in property <bool> live: false;
