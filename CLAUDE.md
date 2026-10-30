@@ -189,6 +189,12 @@ from it, not adding an action that does something. `PwCmd::SetNodes` is
 `SetLinks` one level up: the complete set of nodes that ought to exist, not a
 create or a destroy.
 
+**Destroy a PipeWire object by dropping its proxy.** The drop calls
+`pw_proxy_destroy`, which already asks the server to destroy it;
+`Core::destroy_object` on top asks twice, and the "unknown resource" error the
+second request earns used to be taken for a lost connection and tore every bus
+and link down. Only `-EPIPE` on the core means the connection is gone.
+
 **A bus is one node, not a process.** `app/src/pwthread.rs` asks the daemon
 for a `support.null-audio-sink` through the `adapter` factory, whose input
 ports turn up again on its monitor -- so both kinds of bus have ports at both

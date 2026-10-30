@@ -33,6 +33,12 @@
 //! Nodes and links alike are held as proxies without `object.linger`, so if
 //! this process dies the server tears them down with it and the graph is left
 //! as it was found. A bus is therefore only there while the app is.
+//!
+//! The same goes for removing one on purpose: dropping the proxy *is* the
+//! destroy. `pw_proxy_destroy`, which the drop calls, asks the server to
+//! destroy the object itself, so calling `Core::destroy_object` first asks
+//! twice -- and the second request, for a resource that is already gone,
+//! comes back as an error on the core.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -273,8 +279,8 @@ fn reconcile_nodes(st: &mut State, core: &pw::core::CoreRc, emit: &Emit) {
     for o in std::mem::take(&mut st.owned_nodes) {
         if st.desired_nodes.contains(&o.spec) {
             keep.push(o);
-        } else if let Some(proxy) = o.proxy {
-            let _ = core.destroy_object(proxy);
+        } else {
+            drop(o.proxy);
         }
     }
     st.owned_nodes = keep;
@@ -338,7 +344,7 @@ fn reconcile(st: &mut State, core: &pw::core::CoreRc, emit: &Emit) {
         if wanted && same_ports && alive {
             keep.push(o);
         } else {
-            let _ = core.destroy_object(o.proxy);
+            drop(o.proxy);
         }
     }
     st.owned = keep;
@@ -534,14 +540,22 @@ fn session(
         .error({
             let mainloop = mainloop.downgrade();
             let emit = emit.clone();
-            move |id, _seq, _res, message| {
-                if id == pw::core::PW_ID_CORE {
+            move |id, _seq, res, message| {
+                // Only a broken pipe is the connection itself going. Other
+                // errors arrive on the core too -- one about a resource the
+                // server no longer knows is reported there, having nowhere
+                // else to go -- and treating those as fatal tore every bus
+                // and link down to rebuild them.
+                if id == pw::core::PW_ID_CORE && res == -libc::EPIPE {
                     // The connection itself is done for; the outer loop
                     // reconnects.
                     emit(PwEvent::Error(format!("PipeWire connection lost: {message}")));
                     if let Some(m) = mainloop.upgrade() {
                         m.quit();
                     }
+                } else if id == pw::core::PW_ID_CORE {
+                    // Worth saying, not worth reconnecting over.
+                    emit(PwEvent::Error(format!("PipeWire: {message}")));
                 }
                 // Anything else is one object failing, most often a link to a
                 // node that went away mid-flight. The next tick sorts it out.
@@ -577,14 +591,8 @@ fn session(
     // Tearing the proxies down explicitly keeps the server from having to
     // notice this client vanish while it is still connected. Links before
     // nodes, so nothing is carrying audio out of a bus as it goes.
-    for o in std::mem::take(&mut st.owned) {
-        let _ = core.destroy_object(o.proxy);
-    }
-    for o in std::mem::take(&mut st.owned_nodes) {
-        if let Some(proxy) = o.proxy {
-            let _ = core.destroy_object(proxy);
-        }
-    }
+    drop(std::mem::take(&mut st.owned));
+    drop(std::mem::take(&mut st.owned_nodes));
     drop(st);
 
     let quit = quit.get();
