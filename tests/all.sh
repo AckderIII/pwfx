@@ -31,7 +31,7 @@ fi
 step "2. control protocol"
 run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
                               bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain \
-                              bin/pw_delay
+                              bin/pw_delay bin/pw_deess
 
 step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
@@ -97,6 +97,22 @@ run python3 tests/live.py bin/pw_gain -c 2 -g -12 \
     --audio "1000" "1000=-12+-0.3"
 run python3 tests/gain.py bin/pw_gain
 
+# The de-esser in the graph, from its design equations: a 0.3 tone at the
+# band's centre is -13.47 dB RMS; absolute detection at -30 dB, ratio 4,
+# cuts (30 - 13.47) x 3/4 = 12.40 dB there, and gr has to agree. Relative, a
+# 200 Hz tone beside it puts the band 2.80 dB under the whole at the peak of
+# a 5 ms RMS (see tests/deess.py), so threshold -12 at ratio 2 cuts 4.60 off
+# the 6.5 kHz tone and leaves the 200 Hz one alone. That case does not
+# check gr: the stream switching on and off as it is linked is a broadband
+# click, which relative detection rightly cuts harder for a moment, and gr
+# reports its highest reading. The audio pins the steady cut -- at the
+# centre the cut is g itself -- and the first case pins gr against it.
+run python3 tests/live.py bin/pw_deess -c 2 -d abs -t -30 -R 4 -g 30 \
+    -- "freq 30000" ERROR "detect loud" ERROR "gr 3" ERROR \
+    --audio "6500" "6500=-12.40+-0.3" --gr "12.40+-0.3"
+run python3 tests/live.py bin/pw_deess -c 2 -t -12 -R 2 -g 30 \
+    -- --audio "200,6500" "200=0+-0.3,6500=-4.60+-0.3"
+
 # the delay measured against itself, so the graph's own timing drops out:
 # exact to the sample, reported as no latency, and no click on a time change
 run python3 tests/delay.py bin/pw_delay
@@ -105,7 +121,7 @@ step "4. filters composed into a chain"
 run python3 tests/chain.py
 
 step "5. parameters under load"
-for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit pw_gain pw_delay; do
+for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit pw_gain pw_delay pw_deess; do
     run python3 tests/stress.py bin/$b -c 2
 done
 # The compressor is a gain stage: its output is the input times

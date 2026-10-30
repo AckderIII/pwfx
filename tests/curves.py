@@ -14,6 +14,9 @@ Every expectation is derived from first principles, not from the code:
   compressor   y = x + makeup below the threshold, thr + (x - thr)/ratio +
                makeup above it, for a hard knee.
   limiter      y = min(x + input-gain, ceiling).
+  de-esser     at full reduction the centre is cut by exactly the range, as
+               it is when working; wide is flat at -range; listening shows
+               the band itself, 0 dB at its centre.
   gain         y = x + gain; muted, nothing; balance only ever turns a side
                down, so the louder side's line is still y = x + gain.
   gate         rising, shut by the range until the threshold; falling, open
@@ -110,6 +113,21 @@ for args, want, what in ((["-g", "6"], lambda x: x + 6, "gain +6"),
     check(kind == "level" and err <= 0.006, "pw_gain %s" % what, "worst %.4f dB" % err)
 kind, pts = curve("pw_gain", "-m")
 check(all(y <= -240 for _, y in pts), "pw_gain muted: nothing comes out")
+
+kind, pts = curve("pw_deess", "-f", "6500", "-g", "10")
+at = min(pts, key=lambda p: abs(math.log(p[0] / 6500)))
+low = min(pts, key=lambda p: abs(p[0] - 200))
+check(kind == "freq" and min(y for _, y in pts) >= -10.0 - 0.005
+      and abs(min(y for _, y in pts) + 10.0) < 0.05 and abs(low[1]) < 0.05,
+      "pw_deess split: down to -range at its centre and untouched at 200 Hz",
+      "deepest %.2f, at 200 Hz %.2f" % (min(y for _, y in pts), low[1]))
+kind, pts = curve("pw_deess", "-g", "8", "-m", "wide")
+check(all(abs(y + 8.0) < 0.005 for _, y in pts), "pw_deess wide: flat at -range")
+kind, pts = curve("pw_deess", "-f", "5000", "-L")
+peak = max(pts, key=lambda p: p[1])
+check(abs(peak[1]) < 0.05 and abs(math.log2(peak[0] / 5000)) < 0.05,
+      "pw_deess listening: the band, 0 dB at its centre",
+      "%.2f dB at %.0f Hz" % (peak[1], peak[0]))
 
 kind, pts = curve("pw_gate", "-t", "-40", "-T", "6", "-g", "20")
 xs = [x for x, _ in pts]

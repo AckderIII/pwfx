@@ -1,9 +1,9 @@
 # pw_* — PipeWire filter nodes
 
-Eight audio filters, each a standalone PipeWire filter node built on
+Nine audio filters, each a standalone PipeWire filter node built on
 `pw_filter`. Six are ported from the raw stdin/stdout reference
-implementations in `reference/`; `pw_delay` was written here together with a
-reference of its own; `pw_gain` has none, and is checked against arithmetic
+implementations in `reference/`; `pw_delay` and `pw_deess` were written here
+together with references of their own; `pw_gain` has none, and is checked against arithmetic
 instead.
 
 | filter | what it is | latency |
@@ -16,6 +16,7 @@ instead.
 | `pw_limit` | true-peak brickwall limiter | lookahead + 12 samples |
 | `pw_gain`  | gain, mute, polarity per side, balance; every change ramped | none |
 | `pw_delay` | delay up to 2 s, with feedback and mix for an echo | none reported (the delay is the effect) |
+| `pw_deess` | de-esser: split-band dynamic EQ or wide, relative or absolute detection | lookahead |
 
 Each one takes its settings from the command line, prints them on stdout at
 startup, and accepts changes on stdin while audio is flowing.
@@ -129,7 +130,7 @@ reduction. Read `gr` instead.
 
 ### Gain reduction
 
-`pw_gate`, `pw_comp` and `pw_limit` have a third meter, `gr`: how far the
+`pw_gate`, `pw_comp`, `pw_limit` and `pw_deess` have a third meter, `gr`: how far the
 filter is pulling the level down, in dB, as a positive number. It is
 reported on the same `meter` timer as the levels, and held the same way,
 falling back at 20 dB/s. The other filters have no `gr` at all: it is
@@ -155,6 +156,8 @@ moment it is applied:
 - `pw_limit`: the smoothed gain after the lookahead, not the detector's
   instantaneous demand, so it rises over the lookahead rather than in one
   step.
+- `pw_deess`: the smoothed cut. In split mode that is exactly the cut at
+  the band's centre; in wide mode, the cut to everything.
 
 A fully bypassed filter reads 0: it is still computing a gain, but none of
 it reaches the output.
@@ -220,7 +223,7 @@ Every filter has these on top of its own:
 | `bypass` | pass the input through, crossfaded over 10 ms so it cannot click |
 | `meter` | how often to report `in-level`, `out-level` and `gr`, in ms; 0 (the default) is off |
 | `in-level`, `out-level` | peak level at the input and output ports in dBFS, floored at -240 (read-only) |
-| `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp` and `pw_limit` only (read-only) |
+| `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_limit` and `pw_deess` only (read-only) |
 | `max-rate` | the highest rate delay lines are sized for at startup (command line only) |
 | `node-name`, `target`, `node-latency` | PipeWire plumbing (command line only) |
 
@@ -334,6 +337,9 @@ tests/protocol.py  the stdin/stdout contract
 tests/gain.py      pw_gain per channel in the graph: each side's level and
                    polarity, and no clicks while switching any of it
 tests/impulse.py   pw_delay's impulse response against theory, offline
+tests/deess.py     pw_deess against its design equations, offline: the
+                   cut at the centre, on the skirt, capped by the range,
+                   in both detections and both modes, and bit-exact idle
 tests/delay.py     pw_delay in the graph: the delay exact to the sample,
                    none of it reported as latency, no click on a change
 tests/live.py      one filter in the real graph: node and ports, live

@@ -2,11 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Eight audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
-`pw_limit`, `pw_gain`, `pw_delay`), each a standalone PipeWire filter node built
-on `pw_filter`; all but `pw_gain` with a raw stdin/stdout reference
+Nine audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
+`pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`), each a standalone PipeWire filter
+node built on `pw_filter`; all but `pw_gain` with a raw stdin/stdout reference
 implementation in `reference/` behind them -- the first six ported from theirs,
-`pw_delay` written here together with its own -- and `pw_gain` with none; plus
+`pw_delay` and `pw_deess` written here together with their own -- and `pw_gain`
+with none; plus
 `app/`, a Rust and Slint desktop app that drives them as plugins.
 
 ## Commands
@@ -131,6 +132,15 @@ output by L samples and publish it as `SPA_PARAM_ProcessLatency` (the return
 value of `design()`), so the graph compensates. Changing a lookahead live steps
 the delay line and is audible — that is accepted and documented, not a bug.
 
+**The de-esser's detector averages the band and the whole signal over the same
+5 ms -- keep them equal.** Relative detection compares the two, and both
+alternatives were tried and failed `tests/deess.py`: over 1 ms the whole
+signal's level follows the waveform of a low voice's fundamental and the
+peak-holding smoothing over-cuts (0.5 dB, pitch-dependent); over different
+windows the faster one leads at every onset and every word starts by reading
+as sibilance. The test's relative case models that detector from the
+description, so it would catch either.
+
 **Except `pw_delay`, which reports 0 on purpose.** Its delay is the effect, not
 processing it needs: reported, the graph would compensate it away, and lining
 one source up with another is the whole point of a plain delay. Do not "fix"
@@ -146,7 +156,7 @@ apart than one.
 same coefficients, same transposed direct form II, same double-precision state,
 same denormal flushing. `make test` proves it by running each filter's actual
 core through the reference's stream handling and `cmp`-ing against the reference
-binary — currently 52 cases across orders, block sizes, sidechain settings and
+binary — currently 60 cases across orders, block sizes, sidechain settings and
 edges, all byte-identical, plus four that drive the limiter hard into its
 ceiling and insist the breach count stays zero.
 
@@ -158,7 +168,9 @@ This is why the lookahead filters keep their core in a header (`gate_dsp.h`,
 `*_run()` delays its output, and `tests/t_*.c` reinstates the reference's
 absorb-and-flush (drop the first L outputs, feed L frames of silence at EOF)
 around the same code so the two streams line up. `pw_lpf`/`pw_hpf`/`pw_eq` have
-no delay line and use `src/dsp.h` directly. `pw_delay` keeps its core in
+no delay line and use `src/dsp.h` directly. `pw_deess` is the de-esser's
+core in `deess_dsp.h`, absorbed in `tests/t_deess.c` like the gate's.
+`pw_delay` keeps its core in
 `delay_dsp.h` too, but needs no absorbing: the delay is its output in the
 reference as well, and `tests/impulse.py` checks the impulse response the two
 agree on against theory.

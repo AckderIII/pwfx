@@ -82,8 +82,8 @@ See [Running without the window](#running-without-the-window).
   reports, as a bar and as a figure in dBFS, and the latency it adds. The
   figure is what the filter last reported: a peak hold that falls back at
   20 dB/s, so the highest reading over a run is the one to trust. Silence
-  reads as `—` rather than as the filters' -240 dB floor. A gate, compressor
-  or limiter shows a third strip below those two, **gr**: how far it is
+  reads as `—` rather than as the filters' -240 dB floor. A gate, compressor,
+  limiter or de-esser shows a third strip below those two, **gr**: how far it is
   pulling the level down, as a bar growing from the right over 24 dB and a figure such as
   `-14.7`. Which stages get one comes from the filter's `--help`, like
   everything else here.

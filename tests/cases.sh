@@ -52,3 +52,17 @@ run_case delay -r $RATE -c $CH -b 128  -t 120 -f 40 -m 35
 run_case delay -r $RATE -c $CH -b 333  -t 7.3 -f 95 -m 50
 run_case delay -r $RATE -c 1   -b 4096 -t 250 -f 60 -m 100
 run_case delay -r $RATE -c $CH -b 1    -t 2.1 -f 20 -m 0
+
+# The de-esser: both detections, both cut modes, listening, no lookahead and
+# the longest, instant attack, the extremes of ratio, range and width, and
+# block sizes from 1 frame to 4096. The test stream's noise and sweep run
+# through the band, so these cut; its silence and its denormal tail are where
+# the relative floor and the bit-exact pass-through are exercised.
+run_case deess -r $RATE -c $CH -b 128
+run_case deess -r $RATE -c $CH -b 97   -d abs -t -30
+run_case deess -r $RATE -c $CH -b 1024 -m wide
+run_case deess -r $RATE -c $CH -b 333  -L
+run_case deess -r $RATE -c $CH -b 128  -k 0 -a 0 -e 5
+run_case deess -r $RATE -c $CH -b 256  -f 3000 -Q 0.5 -R 20 -g 30
+run_case deess -r $RATE -c 1   -b 4096 -f 9000 -Q 4 -t -6 -R 2 -g 6
+run_case deess -r $RATE -c $CH -b 1    -k 10 -d abs -t -40 -m wide

@@ -56,6 +56,13 @@ echo "delay impulse response against theory:"
 python3 tests/impulse.py
 fails=$((fails+$?))
 
+# Likewise the de-esser: the comparison proves core and reference agree, this
+# that they cut what the design equations say.
+echo
+echo "de-esser against its design equations:"
+python3 tests/deess.py
+fails=$((fails+$?))
+
 # The response curves are drawn from the same coefficients the DSP runs, so
 # they are checked here too -- against theory, not against a reference.
 echo

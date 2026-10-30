@@ -586,7 +586,8 @@ mod against_the_real_filters {
             // A gain-reduction meter on exactly the filters that reduce
             // gain, read-only and so never a knob. The window draws the
             // strip off this, so it must not appear on a low-pass.
-            let dynamics = ["pw_gate", "pw_comp", "pw_limit"].contains(&d.name.as_str());
+            let dynamics =
+                ["pw_gate", "pw_comp", "pw_limit", "pw_deess"].contains(&d.name.as_str());
             match d.param("gr") {
                 Some(gr) => {
                     assert!(dynamics, "{} has a gr meter", d.name);
