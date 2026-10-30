@@ -178,6 +178,36 @@ def main():
         check(got is not None and got.startswith("in-level "),
               "but a bare in-level still queries it", "got %r" % got)
 
+        # gr exists exactly where there is a gain reduction to meter: the
+        # dynamics filters have it, read-only, and the rest do not, so a
+        # consumer can tell from the dump which stages get a meter.
+        has_gr = any(l.split(" ")[0] == "gr" for l in dump)
+        want_gr = name in ("pw_gate", "pw_comp", "pw_limit")
+        check(has_gr == want_gr, "%s gr in the dump" % ("has" if want_gr else "no"))
+        if has_gr:
+            f.send("gr 3")
+            e = f.errline(2.0)
+            check(e is not None and e.startswith("error:"),
+                  "rejects a write to gr (read-only)", str(e))
+            drain(f)
+            f.set("meter 100")
+            seen, end = 0, time.time() + 1.5
+            while time.time() < end:
+                l = f.line(0.5, skip_comments=True)
+                if l is None:
+                    break
+                if l.split(" ")[0] == "gr":
+                    seen += 1
+            check(seen >= 1, "armed meter reports gr with the levels",
+                  "%d gr lines" % seen)
+            f.set("meter 0")
+            drain(f)
+        else:
+            f.send("gr")
+            e = f.errline(2.0)
+            check(e is not None and e.startswith("error:"),
+                  "gr is an unknown name here", str(e))
+
         rc = f.stop()
         check(rc == 0, "quit exits 0", "rc=%s" % rc)
         print()

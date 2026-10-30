@@ -122,6 +122,11 @@ static void gate_pw_process(void *user, const void *coeffs, int changed,
     gate_run(user, coeffs, in, out, channels, n);
 }
 
+static double gate_pw_gr(void *user, const void *coeffs)
+{
+    return gate_take_gr(user, coeffs);
+}
+
 int main(int argc, char **argv)
 {
     static gate_state state;
@@ -150,6 +155,7 @@ int main(int argc, char **argv)
         .validate   = gate_pw_validate,
         .design     = gate_pw_design,
         .process    = gate_pw_process,
+        .gain_reduction = gate_pw_gr,
         .user       = &state,
     };
     return pwf_run(&desc, argc, argv);

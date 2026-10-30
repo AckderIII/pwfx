@@ -141,6 +141,12 @@ static void comp_pw_process(void *user, const void *coeffs, int changed,
     comp_run(s, c, in, out, channels, n);
 }
 
+static double comp_pw_gr(void *user, const void *coeffs)
+{
+    (void)coeffs;
+    return comp_take_gr(user);
+}
+
 int main(int argc, char **argv)
 {
     static comp_state state;
@@ -175,6 +181,7 @@ int main(int argc, char **argv)
         .validate   = comp_pw_validate,
         .design     = comp_pw_design,
         .process    = comp_pw_process,
+        .gain_reduction = comp_pw_gr,
         .user       = &state,
     };
     return pwf_run(&desc, argc, argv);

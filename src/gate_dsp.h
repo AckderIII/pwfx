@@ -85,6 +85,7 @@ typedef struct {
     long long  n, hold_left;
     int        is_open;
     double     p, gain, last_p;
+    double     blk_min;                /* least gain since gate_take_gr */
 } gate_state;
 
 static inline void gate_design(gate_coeffs *c, double rate,
@@ -125,6 +126,7 @@ static inline void gate_reset(gate_state *s)
     s->p = 0.0;
     s->gain = 0.0;
     s->last_p = -1.0;
+    s->blk_min = 1.0;
 }
 
 static inline int gate_init(gate_state *s, uint32_t channels, double max_rate)
@@ -240,10 +242,22 @@ static inline void gate_run(gate_state *s, const gate_coeffs *c,
         rd = (s->w + s->ring_frames - L) % s->ring_frames;
         for (ch = 0; ch < channels; ch++)
             out[ch][k] = (float)(s->ring[(size_t)rd * channels + ch] * s->gain);
+        if (s->gain < s->blk_min) s->blk_min = s->gain;
 
         s->w = (s->w + 1) % s->ring_frames;
         s->n++;
     }
+}
+
+/* The most gain reduction applied since the last call, in dB >= 0. A gate
+ * snapped shut has a gain of exactly zero, which is no finite number of dB;
+ * it reports its range, which is what it was asked to close by. */
+static inline double gate_take_gr(gate_state *s, const gate_coeffs *c)
+{
+    double g = s->blk_min;
+    s->blk_min = 1.0;
+    if (g <= 0.0) return c->range_db;
+    return g < 1.0 ? -DSP_LOG10_20 * log(g) : 0.0;
 }
 
 #endif /* GATE_DSP_H */

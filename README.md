@@ -121,10 +121,45 @@ node.
 
 On the lookahead filters `out-level` lags `in-level` by the lookahead, so the
 two are not the same instant of audio — don't subtract them to get gain
-reduction.
+reduction. Read `gr` instead.
 
-Measuring costs nothing while `meter` is 0: the realtime thread checks one
-atomic and skips the scan entirely.
+### Gain reduction
+
+`pw_gate`, `pw_comp` and `pw_limit` have a third meter, `gr`: how far the
+filter is pulling the level down, in dB, as a positive number. It is
+reported on the same `meter` timer as the levels, and held the same way,
+falling back at 20 dB/s. The other filters have no `gr` at all: it is
+absent from their dump and their `--help`, and asking for it is an unknown
+name, so a consumer can tell from the dump which filters have one.
+
+```
+meter 100
+in-level -10.5
+out-level -25.1
+gr 14.7
+```
+
+It is the gain the audio is actually multiplied by, measured at the
+moment it is applied:
+
+- `pw_comp`: the smoothed reduction, without makeup -- 6 dB of makeup
+  does not make 14.7 dB of compression read as 8.7. Under `link off`, the
+  channel being reduced the most.
+- `pw_gate`: the closed gate reads its `range`. A gate snapped to silence
+  (`range` 90 or more) has no finite number of dB to report, so it reads
+  its range as well.
+- `pw_limit`: the smoothed gain after the lookahead, not the detector's
+  instantaneous demand, so it rises over the lookahead rather than in one
+  step.
+
+A fully bypassed filter reads 0: it is still computing a gain, but none of
+it reaches the output.
+
+Measuring costs almost nothing while `meter` is 0: the realtime thread
+checks one atomic and skips the level scan entirely. The dynamics filters
+keep taking their block's reduction, one comparison per sample in the core,
+so that turning the meter on reports the present rather than the worst
+moment since startup.
 
 Driving one from a script:
 
@@ -146,8 +181,9 @@ Every filter has these on top of its own:
 | `rate` | the graph's sample rate, reported when it changes (read-only) |
 | `latency` | samples of latency this filter adds, reported to the graph (read-only) |
 | `bypass` | pass the input through, crossfaded over 10 ms so it cannot click |
-| `meter` | how often to report `in-level` and `out-level`, in ms; 0 (the default) is off |
+| `meter` | how often to report `in-level`, `out-level` and `gr`, in ms; 0 (the default) is off |
 | `in-level`, `out-level` | peak level at the input and output ports in dBFS, floored at -240 (read-only) |
+| `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp` and `pw_limit` only (read-only) |
 | `max-rate` | the highest rate delay lines are sized for at startup (command line only) |
 | `node-name`, `target`, `node-latency` | PipeWire plumbing (command line only) |
 

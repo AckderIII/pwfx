@@ -59,19 +59,20 @@ run python3 tests/live.py bin/pw_gate -c 2 -t -60 -k 5 \
 # shut: range 120 dB snaps the closed state to exact silence
 run python3 tests/live.py bin/pw_gate -c 2 -t 0 -g 120 -F 0 \
     -- --audio "200,4000" "200=-240+-1,4000=-240+-1"
-# shut at a 20 dB range: exactly 20 dB down, not muted
+# shut at a 20 dB range: exactly 20 dB down, not muted -- and gr reads 20
 run python3 tests/live.py bin/pw_gate -c 2 -t 0 -g 20 -F 0 \
-    -- --audio "200,4000" "200=-20+-1.5,4000=-20+-1.5"
+    -- --audio "200,4000" "200=-20+-1.5,4000=-20+-1.5" --gr "20+-0.2"
 
 # a 1 kHz tone at -10.46 dBFS, threshold -30, ratio 4, hard knee:
-# (30 - 10.46) x (1 - 1/4) = 14.66 dB of gain reduction
+# (30 - 10.46) x (1 - 1/4) = 14.66 dB of gain reduction, and the gr meter
+# has to say so
 run python3 tests/live.py bin/pw_comp -c 2 -t -30 -R 4 -w 0 -a 1 -e 200 -k 5 \
     -- "link avg" "link avg" "link off" "link off" "link max" "link max" \
-       "link sideways" ERROR "ratio 0.5" ERROR \
-    --audio "1000" "1000=-14.66+-0.7"
-# the same, with 6 dB of makeup on top
+       "link sideways" ERROR "ratio 0.5" ERROR "gr 3" ERROR \
+    --audio "1000" "1000=-14.66+-0.7" --gr "14.66+-0.5"
+# the same, with 6 dB of makeup on top -- which the gr meter does not count
 run python3 tests/live.py bin/pw_comp -c 2 -t -30 -R 4 -w 0 -a 1 -e 200 -m 6 \
-    -- --audio "1000" "1000=-8.66+-0.7"
+    -- --audio "1000" "1000=-8.66+-0.7" --gr "14.66+-0.5"
 
 # below the ceiling: untouched, and latency is lookahead + 12 taps of
 # interpolator group delay
@@ -80,9 +81,10 @@ run python3 tests/live.py bin/pw_limit -c 2 -C -1 -i 0 \
 # driven 20 dB in: the ceiling holds exactly, at both settings
 # --meter also pins out-level against the ceiling: the limiter's own meter
 # has to agree with what was recorded off its output ports
+# 20 dB in on a -10.46 dBFS tone is +9.54; a -1 ceiling takes 10.54 off it
 run python3 tests/live.py bin/pw_limit -c 2 -C -1 -i 20 --meter \
     -- "oversample 3" ERROR "ceiling 3" ERROR \
-    --audio "1000" "1000=9.46+-0.35" --peak "-1+-0.25"
+    --audio "1000" "1000=9.46+-0.35" --peak "-1+-0.25" --gr "10.54+-0.35"
 run python3 tests/live.py bin/pw_limit -c 2 -C -6 -i 20 -e 30 -k 10 \
     -- --audio "1000" "1000=4.46+-0.35" --peak "-6+-0.25"
 

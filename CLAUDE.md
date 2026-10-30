@@ -71,6 +71,15 @@ lock-free on every target and nothing in `process()` may take a lock. The peak
 is held in dB so the fallback is a subtraction proportional to the block length
 and the only transcendental is one `log10` per block.
 
+Gain reduction rides the same path. A filter opts in by setting
+`pwf_desc.gain_reduction`, which the framework calls after every `process()`;
+the dynamics cores keep the block's extreme gain with one comparison per
+sample and hand it over in `*_take_gr()`, so the per-sample path gains no
+transcendental either. The `gr` core parameter exists only on a filter that
+opted in -- `core_shown()` hides it from the dump, `--help` and lookups
+everywhere else -- because the app draws a meter for every filter that lists
+one.
+
 Consequences for any new code:
 
 - **Never allocate, lock or block in `process()`.** Anything whose size depends
@@ -95,7 +104,7 @@ through that, or a controller parsing stdout breaks. Multi-line help text is why
 reintroduce a code path that writes without a newline and expects it to arrive.
 
 **It is also event-driven — a line appears because something changed or was
-asked for.** `in-level`/`out-level` are the sole exception and are therefore
+asked for.** `in-level`/`out-level`/`gr` are the sole exception and are therefore
 off by default (`meter 0`), so a consumer that never asks for them sees the
 stream it saw before they existed; `tests/protocol.py` guards both halves of
 that. Anything else periodic must be opt-in the same way. A change may emit

@@ -105,6 +105,7 @@ typedef struct {
 
     long long  n;
     double     gr_db, last_b2;
+    double     blk_min;                   /* least gain since limit_take_gr */
     int        last_A;
 
     /* diagnostics */
@@ -262,6 +263,7 @@ static inline int limit_init(limit_state *s, uint32_t channels,
 
     s->gr_db = 0.0;
     s->last_b2 = 1.0;
+    s->blk_min = 1.0;
     s->last_A = 0;
     limit_boxcar_fill(&s->box1, s->max_A, 1.0);
     limit_boxcar_fill(&s->box2, s->max_A, 1.0);
@@ -338,6 +340,7 @@ static inline void limit_run(limit_state *s, const limit_coeffs *c,
         b1 = limit_boxcar_push(&s->box1, m);
         b2 = limit_boxcar_push(&s->box2, b1);
         s->last_b2 = b2;
+        if (b2 < s->blk_min) s->blk_min = b2;
 
         /* delay line: write the current frame, read the frame DT back */
         for (ch = 0; ch < channels; ch++) {
@@ -366,6 +369,16 @@ static inline void limit_run(limit_state *s, const limit_coeffs *c,
         s->w = (s->w + 1) % s->ring_frames;
         s->n++;
     }
+}
+
+/* The most gain reduction applied since the last call, in dB >= 0. This is
+ * the smoothed gain the audio is actually multiplied by, not gr_db, the
+ * reduction the detector asked for before it was spread over the lookahead. */
+static inline double limit_take_gr(limit_state *s)
+{
+    double g = s->blk_min;
+    s->blk_min = 1.0;
+    return g > 0.0 && g < 1.0 ? -DSP_LOG10_20 * log(g) : 0.0;
 }
 
 #endif /* LIMIT_DSP_H */

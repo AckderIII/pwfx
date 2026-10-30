@@ -90,6 +90,12 @@ static void limit_pw_process(void *user, const void *coeffs, int changed,
     limit_run(user, coeffs, in, out, channels, n);
 }
 
+static double limit_pw_gr(void *user, const void *coeffs)
+{
+    (void)coeffs;
+    return limit_take_gr(user);
+}
+
 int main(int argc, char **argv)
 {
     static limit_state state;
@@ -123,6 +129,7 @@ int main(int argc, char **argv)
         .fini       = limit_pw_fini,
         .design     = limit_pw_design,
         .process    = limit_pw_process,
+        .gain_reduction = limit_pw_gr,
         .user       = &state,
     };
     return pwf_run(&desc, argc, argv);

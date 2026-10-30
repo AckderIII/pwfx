@@ -71,6 +71,7 @@ typedef struct {
     int        ring_frames, w;
 
     double     peak_gr;                 /* diagnostic, dB */
+    double     blk_gr;                  /* most reduction since comp_take_gr, dB */
     int        last_link;               /* -1 until the first block runs */
 } comp_state;
 
@@ -139,6 +140,7 @@ static inline void comp_reset(comp_state *s)
     }
     s->w = 0;
     s->peak_gr = 0.0;
+    s->blk_gr = 0.0;
     s->last_link = -1;
 }
 
@@ -244,6 +246,7 @@ static inline void comp_run(comp_state *s, const comp_coeffs *c,
             }
             if (s->yL[d] < 1e-12) s->yL[d] = 0.0;
             if (s->yL[d] > s->peak_gr) s->peak_gr = s->yL[d];
+            if (s->yL[d] > s->blk_gr)  s->blk_gr  = s->yL[d];
 
             gdb = c->makeup_db - s->yL[d];
             s->gain[d] = s->yL[d] == 0.0 ? c->makeup_lin
@@ -264,6 +267,15 @@ static inline void comp_run(comp_state *s, const comp_coeffs *c,
 
         s->w = (s->w + 1) % s->ring_frames;
     }
+}
+
+/* The most gain reduction applied since the last call, in dB >= 0, makeup
+ * not counted: what the meter shows. Linked or not, the worst detector. */
+static inline double comp_take_gr(comp_state *s)
+{
+    double g = s->blk_gr;
+    s->blk_gr = 0.0;
+    return g;
 }
 
 #endif /* COMP_DSP_H */

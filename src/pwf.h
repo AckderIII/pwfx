@@ -120,6 +120,13 @@ typedef struct {
                     float *const *in, float *const *out,
                     uint32_t channels, uint32_t n_samples);
 
+    /* Optional, realtime thread: the most gain reduction the filter has
+     * applied since the last call, in dB >= 0. Called after every process()
+     * with the same coeffs, so it must be as cheap and as lock-free as that.
+     * A filter that sets this gets a read-only "gr" meter, reported with
+     * in-level and out-level; one that leaves it NULL does not have one. */
+    double (*gain_reduction)(void *user, const void *coeffs);
+
     void *user;
 } pwf_desc;
 
