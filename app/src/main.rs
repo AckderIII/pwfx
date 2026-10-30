@@ -2687,6 +2687,7 @@ mod render {
             enabled: true,
             width: 2,
             stages: vec![
+                stage("gain", "pw_gain", &[("gain", "-6"), ("balance", "20")]),
                 stage("hpf", "pw_hpf", &[("cutoff", "80"), ("order", "2")]),
                 stage("eq", "pw_eq", &[("b3-freq", "2500"), ("b3-gain", "4"), ("b3-q", "1.2"),
                                         ("ls-freq", "200"), ("ls-gain", "-3")]),
@@ -2699,6 +2700,7 @@ mod render {
         });
         let mut engine = Engine::new(plugins, st, Arc::new(|_| {}));
         for (node, bin, args) in [
+            ("pwfx.voice.gain", "pw_gain", &["-g", "-6", "-b", "20"][..]),
             ("pwfx.voice.hpf", "pw_hpf", &["-f", "80", "-n", "2"][..]),
             ("pwfx.voice.eq", "pw_eq", &["--b3-freq", "2500", "--b3-gain", "4", "--b3-q", "1.2",
                                          "--ls-freq", "200", "--ls-gain", "-3"][..]),
