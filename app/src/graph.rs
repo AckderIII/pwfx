@@ -111,15 +111,65 @@ impl NodeKind {
     }
 }
 
+/// What a chain end saved as "the default input" is called. Not a node name
+/// anyone can have -- `node.name` never starts with `@` -- so it can sit in
+/// the same field as one and be told apart from it.
+pub const DEFAULT_SOURCE: &str = "@default-source";
+/// The same for "the default output".
+pub const DEFAULT_SINK: &str = "@default-sink";
+
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub connected: bool,
+    /// `node.name` of what the session manager currently routes to by
+    /// default, from the `default` metadata: `default.audio.source` and
+    /// `default.audio.sink`. The effective defaults rather than the
+    /// configured ones, so an unplugged favourite gives way to whatever
+    /// the session manager fell back to.
+    pub default_source: Option<String>,
+    pub default_sink: Option<String>,
 }
 
 impl Graph {
     pub fn node(&self, name: &str) -> Option<&Node> {
         self.nodes.iter().find(|n| n.name == name)
+    }
+
+    /// The node an endpoint name stands for right now.
+    ///
+    /// A concrete name is itself; a default is whatever the session manager
+    /// names at the moment, so a chain on "the default output" moves to the
+    /// headphones when they become the default, with nothing stored anywhere
+    /// changing. That is the same re-resolve-by-name every link already gets,
+    /// one level further up.
+    pub fn lookup(&self, name: &str) -> Option<&Node> {
+        self.node(self.resolve_name(name)?)
+    }
+
+    /// The concrete `node.name` behind an endpoint name, if it may be used.
+    ///
+    /// A default that names one of this app's own nodes is not followed.
+    /// Making a source bus the system microphone is the normal way to use
+    /// one, and a chain whose input is "the default microphone" would then
+    /// be fed from its own output. Not following it drops that end like an
+    /// unplugged device, which is a silence the user can see the reason for
+    /// rather than a feedback loop.
+    pub fn resolve_name<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        let target = match self.default_for(name) {
+            Some(target) => target?,
+            None => return Some(name),
+        };
+        (!target.starts_with(crate::state::PREFIX)).then_some(target)
+    }
+
+    /// `None` for a concrete name; `Some(current target)` for a default.
+    pub fn default_for(&self, name: &str) -> Option<Option<&str>> {
+        match name {
+            DEFAULT_SOURCE => Some(self.default_source.as_deref()),
+            DEFAULT_SINK => Some(self.default_sink.as_deref()),
+            _ => None,
+        }
     }
 
     /// Nodes that can act as an endpoint in the given direction, grouped and
@@ -370,6 +420,48 @@ mod tests {
         // A filter stage is not a bus, however close the prefix looks.
         n.name = "pwfx.voice.hpf".into();
         assert_ne!(n.kind(Dir::In), NodeKind::Bus);
+    }
+
+    fn with_defaults(source: &str, sink: &str) -> Graph {
+        let mut mic = node(&[("capture_MONO", "MONO", Dir::Out)]);
+        mic.name = "mic".into();
+        let mut spk = node(&[("playback_FL", "FL", Dir::In)]);
+        spk.name = "spk".into();
+        Graph {
+            nodes: vec![mic, spk],
+            connected: true,
+            default_source: Some(source.into()),
+            default_sink: Some(sink.into()),
+        }
+    }
+
+    #[test]
+    fn a_default_resolves_to_whatever_is_the_default_now() {
+        let mut g = with_defaults("mic", "spk");
+        assert_eq!(g.lookup(DEFAULT_SOURCE).map(|n| n.name.as_str()), Some("mic"));
+        assert_eq!(g.lookup(DEFAULT_SINK).map(|n| n.name.as_str()), Some("spk"));
+        // A concrete name is untouched.
+        assert_eq!(g.resolve_name("spk"), Some("spk"));
+
+        // The default moves to something not in the graph: nothing, the
+        // same as an unplugged device.
+        g.default_sink = Some("headphones".into());
+        assert!(g.lookup(DEFAULT_SINK).is_none());
+        g.default_sink = None;
+        assert!(g.lookup(DEFAULT_SINK).is_none());
+    }
+
+    #[test]
+    fn a_default_that_is_one_of_our_own_nodes_is_not_followed() {
+        // The source bus made the system microphone: following it would
+        // feed a chain from its own output.
+        let g = with_defaults("pwfx.bus.mic", "pwfx.voice.hpf");
+        assert_eq!(g.resolve_name(DEFAULT_SOURCE), None);
+        assert_eq!(g.resolve_name(DEFAULT_SINK), None);
+        assert_eq!(g.default_for(DEFAULT_SOURCE), Some(Some("pwfx.bus.mic")));
+        // Picking the bus by name is still allowed; only the default is
+        // second-guessed.
+        assert_eq!(g.resolve_name("pwfx.bus.mic"), Some("pwfx.bus.mic"));
     }
 
     #[test]

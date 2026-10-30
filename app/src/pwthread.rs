@@ -24,6 +24,12 @@
 //! needs no waiting on and no retry logic: its ports appearing in the registry
 //! *is* the retry.
 //!
+//! One object is bound rather than just read off the registry: the `default`
+//! metadata, which is where the session manager says what the default input
+//! and output are. Its contents are not global properties, so they only
+//! arrive through a listener; they go out in the snapshot alongside the
+//! nodes, and a change to them wakes the same tick a node appearing does.
+//!
 //! Nodes and links alike are held as proxies without `object.linger`, so if
 //! this process dies the server tears them down with it and the graph is left
 //! as it was found. A bus is therefore only there while the app is.
@@ -189,6 +195,11 @@ struct State {
     desired_nodes: Vec<NodeSpec>,
     owned_nodes: Vec<OwnedNode>,
     factory: Option<String>,
+    /// The registry id of the `default` metadata, so its removal -- the
+    /// session manager restarting -- can be told apart from anything else's.
+    metadata: Option<u32>,
+    default_source: Option<String>,
+    default_sink: Option<String>,
 }
 
 impl State {
@@ -226,6 +237,8 @@ impl State {
         Graph {
             nodes,
             connected: true,
+            default_source: self.default_source.clone(),
+            default_sink: self.default_sink.clone(),
         }
     }
 
@@ -467,11 +480,26 @@ fn session(
     };
     let _ = ticker.update_timer(Some(TICK), Some(TICK));
 
+    // The bound `default` metadata and its listener, which have to be kept
+    // alive for as long as the defaults are to keep arriving.
+    let metadata: Rc<RefCell<Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>>> =
+        Rc::new(RefCell::new(None));
+
     let _reg_listener = registry
         .add_listener_local()
         .global({
             let (st, graph_moved) = (st.clone(), graph_moved.clone());
+            let (registry, metadata) = (registry.downgrade(), metadata.clone());
             move |g| {
+                if g.type_ == ObjectType::Metadata {
+                    if prop(g.props, "metadata.name").as_deref() == Some("default") {
+                        if let Some(registry) = registry.upgrade() {
+                            *metadata.borrow_mut() =
+                                watch_defaults(&registry, g, &st, &graph_moved);
+                        }
+                    }
+                    return;
+                }
                 if take_global(&mut st.borrow_mut(), g) {
                     graph_moved.set(true);
                 }
@@ -479,11 +507,21 @@ fn session(
         })
         .global_remove({
             let (st, graph_moved) = (st.clone(), graph_moved.clone());
+            let metadata = metadata.clone();
             move |id| {
                 let mut st = st.borrow_mut();
-                let hit = st.nodes.remove(&id).is_some()
+                let mut hit = st.nodes.remove(&id).is_some()
                     | st.ports.remove(&id).is_some()
                     | st.links.remove(&id).is_some();
+                if st.metadata == Some(id) {
+                    // The session manager went away. Until it is back there
+                    // is no default, and a chain on one is unplugged.
+                    st.metadata = None;
+                    st.default_source = None;
+                    st.default_sink = None;
+                    metadata.borrow_mut().take();
+                    hit = true;
+                }
                 if hit {
                     graph_moved.set(true);
                 }
@@ -555,6 +593,55 @@ fn session(
         return idle(mainloop, rx, wanted, RETRY);
     }
     (rx, true)
+}
+
+/// Bind the `default` metadata and follow the two keys this app cares about.
+fn watch_defaults(
+    registry: &pw::registry::RegistryRc,
+    g: &pw::registry::GlobalObject<&libspa::utils::dict::DictRef>,
+    st: &Rc<RefCell<State>>,
+    graph_moved: &Rc<Cell<bool>>,
+) -> Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)> {
+    let proxy: pw::metadata::Metadata = registry.bind(g).ok()?;
+    st.borrow_mut().metadata = Some(g.id);
+    let listener = proxy
+        .add_listener_local()
+        .property({
+            let (st, graph_moved) = (st.clone(), graph_moved.clone());
+            move |subject, key, _type, value| {
+                if subject != pw::core::PW_ID_CORE {
+                    return 0;
+                }
+                let mut st = st.borrow_mut();
+                let new = value.and_then(default_name);
+                let slot = match key {
+                    Some("default.audio.source") => &mut st.default_source,
+                    Some("default.audio.sink") => &mut st.default_sink,
+                    Some(_) => return 0,
+                    // No key: every property was cleared at once.
+                    None => {
+                        st.default_source = None;
+                        st.default_sink = None;
+                        graph_moved.set(true);
+                        return 0;
+                    }
+                };
+                if *slot != new {
+                    *slot = new;
+                    graph_moved.set(true);
+                }
+                0
+            }
+        })
+        .register();
+    Some((proxy, listener))
+}
+
+/// The node name out of a default's value, which is JSON:
+/// `{"name":"alsa_output.pci-0000_00_1f.3.analog-stereo"}`.
+fn default_name(value: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(value).ok()?;
+    Some(v.get("name")?.as_str()?.to_string())
 }
 
 /// Returns true if this global changed anything worth a reconcile.
@@ -686,4 +773,44 @@ fn idle(
 
 fn prop(props: Option<&libspa::utils::dict::DictRef>, key: &str) -> Option<String> {
     props?.get(key).map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_default_names_its_node_in_json() {
+        assert_eq!(
+            default_name(r#"{"name":"alsa_output.usb-Focusrite.HiFi__Line1__sink"}"#).as_deref(),
+            Some("alsa_output.usb-Focusrite.HiFi__Line1__sink")
+        );
+        assert_eq!(default_name("not json"), None);
+        assert_eq!(default_name(r#"{"other":1}"#), None);
+    }
+
+    /// Against the real daemon: the defaults arrive in the snapshot, and they
+    /// name nodes that are in it. Skips with no daemon, or with a session
+    /// manager that has not chosen a default.
+    #[test]
+    fn the_real_defaults_arrive_with_the_graph() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let pw = start(move |ev| {
+            if let PwEvent::Graph(g) = ev {
+                let _ = tx.send(g);
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Ok(g) = rx.recv_timeout(left) else { break };
+            let Some(sink) = g.default_sink.clone() else { continue };
+            assert!(g.node(&sink).is_some(), "the default sink {sink} is not in the graph");
+            if let Some(source) = &g.default_source {
+                assert!(g.node(source).is_some(), "the default source {source} is not in the graph");
+            }
+            drop(pw);
+            return;
+        }
+        eprintln!("no default sink reported; skipping (no PipeWire daemon?)");
+    }
 }

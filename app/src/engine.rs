@@ -318,12 +318,16 @@ impl Engine {
 
             let inputs = self.endpoint_pairs(chain, Dir::Out);
             let outputs = self.endpoint_pairs(chain, Dir::In);
+            // Pairs are only ever non-empty for an end that resolved, so
+            // these are only read where there is something to link.
+            let src = self.endpoint_node(chain, Dir::Out).unwrap_or_default();
+            let dst = self.endpoint_node(chain, Dir::In).unwrap_or_default();
 
             match nodes.first() {
                 Some(first) => {
                     for (port, ch) in &inputs {
                         links.push(LinkSpec {
-                            out_node: chain.input.as_ref().unwrap().node.clone(),
+                            out_node: src.clone(),
                             out_port: port.clone(),
                             in_node: first.clone(),
                             in_port: format!("in_{}", ch + 1),
@@ -344,7 +348,7 @@ impl Engine {
                         links.push(LinkSpec {
                             out_node: last.clone(),
                             out_port: format!("out_{}", ch + 1),
-                            in_node: chain.output.as_ref().unwrap().node.clone(),
+                            in_node: dst.clone(),
                             in_port: port.clone(),
                         });
                     }
@@ -352,17 +356,13 @@ impl Engine {
                 None => {
                     // No filters: wire the two ends together channel by
                     // channel, so the chain is a plain patch cable.
-                    let (Some(src), Some(dst)) = (chain.input.as_ref(), chain.output.as_ref())
-                    else {
-                        continue;
-                    };
                     for (out_port, ch) in &inputs {
                         for (in_port, ch2) in &outputs {
                             if ch == ch2 {
                                 links.push(LinkSpec {
-                                    out_node: src.node.clone(),
+                                    out_node: src.clone(),
                                     out_port: out_port.clone(),
-                                    in_node: dst.node.clone(),
+                                    in_node: dst.clone(),
                                     in_port: in_port.clone(),
                                 });
                             }
@@ -384,6 +384,17 @@ impl Engine {
         links
     }
 
+    /// The concrete `node.name` one end of a chain is plugged into right now:
+    /// the saved name, or for a default whatever the default currently is.
+    /// `None` if that end is unset or does not resolve.
+    pub fn endpoint_node(&self, chain: &Chain, dir: Dir) -> Option<String> {
+        let endpoint = match dir {
+            Dir::Out => chain.input.as_ref(),
+            Dir::In => chain.output.as_ref(),
+        }?;
+        self.graph.resolve_name(&endpoint.node).map(str::to_string)
+    }
+
     /// The `(port name, chain channel)` pairs for one end of a chain, or
     /// nothing if that end is unset or its node is not currently present.
     pub fn endpoint_pairs(&self, chain: &Chain, dir: Dir) -> Vec<(String, usize)> {
@@ -394,7 +405,7 @@ impl Engine {
         let Some(endpoint) = endpoint else {
             return Vec::new();
         };
-        let Some(node) = self.graph.node(&endpoint.node) else {
+        let Some(node) = self.graph.lookup(&endpoint.node) else {
             return Vec::new();
         };
         graph::resolve(
@@ -605,6 +616,7 @@ mod tests {
         e.graph = Graph {
             nodes,
             connected: true,
+            ..Default::default()
         };
         e
     }
@@ -743,6 +755,49 @@ mod tests {
         let l = show(&e.desired_links());
         assert!(l.iter().any(|s| s.starts_with("mic:")));
         assert!(!l.iter().any(|s| s.contains("spk")));
+    }
+
+    #[test]
+    fn a_chain_on_the_default_output_follows_it() {
+        let mut c = chain(2, &["pw_hpf"]);
+        c.output.as_mut().unwrap().node = graph::DEFAULT_SINK.into();
+        let mut e = engine(
+            vec![c],
+            vec![
+                device("mic", Dir::Out, &["FL", "FR"]),
+                device("spk", Dir::In, &["FL", "FR"]),
+                device("headphones", Dir::In, &["FL", "FR"]),
+            ],
+        );
+        e.graph.default_sink = Some("spk".into());
+        let l = show(&e.desired_links());
+        assert!(l.contains(&"pwfx.voice.hpf:out_1 -> spk:p_FL".to_string()), "{l:?}");
+
+        // Headphones become the default. Nothing in the state moved; the
+        // links did.
+        e.graph.default_sink = Some("headphones".into());
+        let l = show(&e.desired_links());
+        assert!(l.contains(&"pwfx.voice.hpf:out_2 -> headphones:p_FR".to_string()), "{l:?}");
+        assert!(!l.iter().any(|s| s.contains("spk")));
+        // And the saved endpoint still says "the default".
+        assert_eq!(e.state.chains[0].output.as_ref().unwrap().node, graph::DEFAULT_SINK);
+    }
+
+    #[test]
+    fn a_default_pointing_back_into_the_app_drops_that_end() {
+        let mut c = chain(2, &["pw_hpf"]);
+        c.input.as_mut().unwrap().node = graph::DEFAULT_SOURCE.into();
+        c.output.as_mut().unwrap().node = "pwfx.bus.mic".into();
+        // A bus has ports at both ends.
+        let mut bus = device("pwfx.bus.mic", Dir::Out, &["FL", "FR"]);
+        bus.ports.extend(device("pwfx.bus.mic", Dir::In, &["FL", "FR"]).ports);
+        let mut e = engine(vec![c], vec![bus]);
+        // The bus this chain feeds is the system microphone: taking the
+        // default as input would be a loop, so the input is simply not made.
+        e.graph.default_source = Some("pwfx.bus.mic".into());
+        let l = show(&e.desired_links());
+        assert!(!l.iter().any(|s| s.starts_with("pwfx.bus.mic:")), "{l:?}");
+        assert!(l.iter().any(|s| s.ends_with("-> pwfx.bus.mic:p_FL")), "{l:?}");
     }
 
     #[test]

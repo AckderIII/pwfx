@@ -25,6 +25,15 @@ make app          # from the top of the tree; builds the filters too
 - **Routing.** Sources and sinks are chosen from the live graph — buses,
   hardware inputs and outputs, virtual devices, sink monitors and application
   streams. A chain with no filters in it at all is a plain patch cable.
+- **Following the default.** Either end can be **Default input** or
+  **Default output** instead of a device. That end goes wherever the
+  session manager's default goes, so a chain into "the default output"
+  moves to the headphones when they become the default and back again
+  when they are unplugged. The picker and the line under it say what the
+  default is right now. A default that is one of this app's own buses is
+  not followed: making a source bus the system microphone is the normal
+  thing to do, and a chain taking "the default microphone" would then be
+  fed from its own output.
 - **Buses.** A bus is a virtual device the app asks the daemon for, and it is
   what other applications on the machine talk to. A **source** bus is a
   microphone: chains feed it, and your conferencing app records from it. A
@@ -74,6 +83,7 @@ just the next comparison coming out differently:
 | a filter crashes | the next pass sees it is gone and starts it again, with backoff if it will not stay up |
 | the daemon restarts | the PipeWire thread reconnects and replays the wanted links |
 | a preset is loaded | it is compared against what is running; stages that did not change are left alone, audio and all |
+| the default device changes | a chain on the default stores `@default-sink`, not a device; the new name comes in with the graph and the links are worked out again |
 | a bus is renamed | its `node.description` moved, so the node is made again under the new one; its `node.name` did not, so the chains on it never notice |
 
 Two rules follow from the filters' own design and are worth knowing before
@@ -186,7 +196,7 @@ dropdown keeps a row's worth of space between itself and whatever follows.
 cargo test
 ```
 
-48 of them. Five are worth pointing at:
+55 of them. Five are worth pointing at:
 
 - `window_tests` drives the real widgets headlessly through Slint's testing
   backend — it clicks into a field, types, clicks away, and asserts the value

@@ -369,7 +369,7 @@ impl App {
                 let missing_node = [c.input.as_ref(), c.output.as_ref()]
                     .into_iter()
                     .flatten()
-                    .any(|ep| e.graph.node(&ep.node).is_none());
+                    .any(|ep| e.graph.lookup(&ep.node).is_none());
                 ChainRow {
                     id: c.id.as_str().into(),
                     name: c.name.as_str().into(),
@@ -612,7 +612,7 @@ impl App {
                 Dir::In => ("Output channels", chain.output.as_ref()),
             };
             let pairs = e.endpoint_pairs(chain, dir);
-            let node = endpoint.and_then(|ep| e.graph.node(&ep.node));
+            let node = endpoint.and_then(|ep| e.graph.lookup(&ep.node));
             let ports: Vec<(String, String)> = node
                 .map(|n| {
                     n.ports_for(dir)
@@ -639,7 +639,10 @@ impl App {
             win.set_map_title(title.into());
             win.set_map_node(
                 endpoint
-                    .map(|ep| match e.graph.node(&ep.node) {
+                    .map(|ep| match e.graph.lookup(&ep.node) {
+                        Some(n) if e.graph.default_for(&ep.node).is_some() => {
+                            format!("{} ({})", ep.label, n.description)
+                        }
                         Some(_) => ep.label.clone(),
                         None => format!("{} (not connected)", ep.label),
                     })
@@ -892,6 +895,19 @@ fn endpoint_model(
     }];
     let mut nodes: Vec<String> = vec![String::new()];
 
+    // Then the default, which is not a node but whichever one the session
+    // manager currently names. It says which, so picking it is not a guess.
+    let default = default_endpoint(dir);
+    let now = match e.graph.default_for(default) {
+        Some(Some(_)) => match e.graph.lookup(default) {
+            Some(n) => n.description.clone(),
+            None => "not followed".into(),
+        },
+        _ => "none".into(),
+    };
+    options.push(format!("{}  ·  now {now}", default_label(dir)));
+    nodes.push(default.into());
+
     for n in e.graph.endpoints(dir, |n| state::is_stage_node(&n.name)) {
         let count = n.ports_for(dir).len();
         options.push(format!(
@@ -916,6 +932,22 @@ fn endpoint_model(
     (options, nodes, index)
 }
 
+/// The default endpoint for one end of a chain: the default microphone to
+/// take from, the default output to send to.
+fn default_endpoint(dir: Dir) -> &'static str {
+    match dir {
+        Dir::Out => graph::DEFAULT_SOURCE,
+        Dir::In => graph::DEFAULT_SINK,
+    }
+}
+
+fn default_label(dir: Dir) -> &'static str {
+    match dir {
+        Dir::Out => "Default input",
+        Dir::In => "Default output",
+    }
+}
+
 fn endpoint_detail(
     e: &Engine,
     endpoint: Option<&Endpoint>,
@@ -925,6 +957,24 @@ fn endpoint_detail(
     let Some(ep) = endpoint else {
         return String::new();
     };
+    if let Some(target) = e.graph.default_for(&ep.node) {
+        let Some(target) = target else {
+            return "there is no default right now".into();
+        };
+        let Some(node) = e.graph.lookup(&ep.node) else {
+            return if target.starts_with(state::PREFIX) {
+                // Following it would feed this app from its own output.
+                "the default is one of this app's own nodes; not followed".into()
+            } else {
+                "waiting for the default device".into()
+            };
+        };
+        return format!(
+            "following {} · {}",
+            node.description,
+            plural_links(pairs.len())
+        );
+    }
     if e.graph.node(&ep.node).is_none() {
         // A bus is something the user can turn back on, which is worth
         // saying rather than leaving them waiting for a device that is
@@ -943,8 +993,12 @@ fn endpoint_detail(
     } else if covered < width {
         format!("{covered} of {width} channels mapped")
     } else {
-        format!("{} link{}", pairs.len(), plural(pairs.len()))
+        plural_links(pairs.len())
     }
+}
+
+fn plural_links(n: usize) -> String {
+    format!("{n} link{}", plural(n))
 }
 
 // ---------------------------------------------------------------------------
@@ -1405,11 +1459,15 @@ impl App {
             let Some(node) = nodes.get(index).cloned() else {
                 return;
             };
-            let label = e
-                .graph
-                .node(&node)
-                .map(|n| n.description.clone())
-                .unwrap_or_else(|| node.clone());
+            // A default's label is what it is, not what it points at today.
+            let label = if node == default_endpoint(dir) {
+                default_label(dir).to_string()
+            } else {
+                e.graph
+                    .node(&node)
+                    .map(|n| n.description.clone())
+                    .unwrap_or_else(|| node.clone())
+            };
             let Some(c) = e.state.chains.get_mut(v.selected) else {
                 return;
             };
@@ -1494,6 +1552,7 @@ mod picker_tests {
         e.graph = Graph {
             nodes,
             connected: true,
+            ..Default::default()
         };
         e
     }
@@ -1510,12 +1569,36 @@ mod picker_tests {
         assert_eq!(index, 0, "nothing chosen is the first entry");
         assert_eq!(nodes[0], "", "and it stands for no endpoint at all");
         assert!(!nodes.iter().any(|n| n == "pwfx.voice.hpf"));
-        // Buses come first, so the thing the user just made is at the top of
-        // the list rather than filed under whatever media.class it happens
-        // to carry.
-        assert_eq!(nodes[1], "pwfx.bus.mic");
-        assert!(options[1].contains("Buses"));
-        assert_eq!(nodes[2], "alsa_input.card");
+        // The default comes straight after "none"; then buses, so the
+        // thing the user just made is at the top of the list rather than
+        // filed under whatever media.class it happens to carry.
+        assert_eq!(nodes[1], graph::DEFAULT_SOURCE);
+        assert_eq!(nodes[2], "pwfx.bus.mic");
+        assert!(options[2].contains("Buses"));
+        assert_eq!(nodes[3], "alsa_input.card");
+    }
+
+    #[test]
+    fn the_default_entry_says_what_it_points_at() {
+        let mut card = node("alsa_input.card", "Audio/Source", Dir::Out);
+        card.description = "Scarlett 2i2".into();
+        let mut e = engine_with(vec![card]);
+        e.graph.default_source = Some("alsa_input.card".into());
+        let (options, nodes, _) = endpoint_model(&e, Dir::Out, None);
+        assert_eq!(nodes[1], graph::DEFAULT_SOURCE);
+        assert!(options[1].contains("Scarlett 2i2"), "{}", options[1]);
+
+        // Chosen, it is found in the list as itself: never "not connected",
+        // whatever the default happens to be.
+        let saved = Endpoint {
+            node: graph::DEFAULT_SOURCE.into(),
+            label: "Default input".into(),
+            mapping: Mapping::Auto,
+        };
+        e.graph.default_source = None;
+        let (options, _, index) = endpoint_model(&e, Dir::Out, Some(&saved));
+        assert_eq!(index, 1);
+        assert!(options[1].contains("none"), "{}", options[1]);
     }
 
     #[test]

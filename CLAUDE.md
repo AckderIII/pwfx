@@ -175,6 +175,12 @@ reassigned on every restart and every profile change; names are not. This is
 what makes an unplugged interface, a crashed filter and a restarted daemon
 ordinary rather than special. A change that resolves a name once and caches the
 id breaks all three.
+A chain end on the system default is the same idea one level up: it stores
+`@default-source`/`@default-sink`, and `Graph::lookup` turns that into whatever
+the `default` metadata names in the current snapshot. Look endpoints up through
+`lookup`/`resolve_name`, never `Graph::node`, or a default end reads as
+unplugged. A default naming one of the app's own `pwfx.` nodes is deliberately
+not followed -- see `resolve_name`.
 
 **Four reconcile loops, no commands anywhere.** State -> processes -> bus
 nodes -> links, each closing the gap between what is and what should be.
