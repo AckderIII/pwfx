@@ -49,6 +49,13 @@ for args in "-C -1 -i 24 -e 30 -k 5" "-C -0.1 -i 40 -e 5 -k 1" \
     fi
 done
 
+# The comparison above proves the delay core agrees with its reference;
+# this proves what they agree on is right.
+echo
+echo "delay impulse response against theory:"
+python3 tests/impulse.py
+fails=$((fails+$?))
+
 # The response curves are drawn from the same coefficients the DSP runs, so
 # they are checked here too -- against theory, not against a reference.
 echo

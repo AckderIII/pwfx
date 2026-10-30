@@ -40,3 +40,15 @@ run_case limit -r $RATE -c $CH -b 97  -C -0.3 -i 0 -e 100 -k 10
 run_case limit -r $RATE -c $CH -b 256 -C -6 -i 18 -e 10 -k 1 -O 1
 run_case limit -r $RATE -c $CH -b 333 -C -2 -i 12 -e 200 -k 0 -O 16
 run_case limit -r $RATE -c $CH -b 1024 -C -20 -i 30 -e 5 -k 50 -O 2
+
+# A plain delay, an echo, all wet and half wet, a zero time, and block sizes
+# that do and do not divide the ring -- the delay is the one core whose state
+# is addressed by position, so the block boundaries are where it would break.
+run_case delay -r $RATE -c $CH -b 128
+run_case delay -r $RATE -c $CH -b 128  -t 10
+run_case delay -r $RATE -c $CH -b 97   -t 10
+run_case delay -r $RATE -c $CH -b 1024 -t 0.5
+run_case delay -r $RATE -c $CH -b 128  -t 120 -f 40 -m 35
+run_case delay -r $RATE -c $CH -b 333  -t 7.3 -f 95 -m 50
+run_case delay -r $RATE -c 1   -b 4096 -t 250 -f 60 -m 100
+run_case delay -r $RATE -c $CH -b 1    -t 2.1 -f 20 -m 0

@@ -1,9 +1,10 @@
 # pw_* — PipeWire filter nodes
 
-Seven audio filters, each a standalone PipeWire filter node built on
+Eight audio filters, each a standalone PipeWire filter node built on
 `pw_filter`. Six are ported from the raw stdin/stdout reference
-implementations in `reference/`; `pw_gain` has none to port, and is checked
-against arithmetic instead.
+implementations in `reference/`; `pw_delay` was written here together with a
+reference of its own; `pw_gain` has none, and is checked against arithmetic
+instead.
 
 | filter | what it is | latency |
 |---|---|---|
@@ -14,6 +15,7 @@ against arithmetic instead.
 | `pw_comp`  | compressor, log-domain detector, soft knee, lookahead | lookahead |
 | `pw_limit` | true-peak brickwall limiter | lookahead + 12 samples |
 | `pw_gain`  | gain, mute, polarity per side, balance; every change ramped | none |
+| `pw_delay` | delay up to 2 s, with feedback and mix for an echo | none reported (the delay is the effect) |
 
 Each one takes its settings from the command line, prints them on stdout at
 startup, and accepts changes on stdin while audio is flowing.
@@ -331,6 +333,9 @@ tests/curves.py    every filter's --curve against theory: the bilinear
 tests/protocol.py  the stdin/stdout contract
 tests/gain.py      pw_gain per channel in the graph: each side's level and
                    polarity, and no clicks while switching any of it
+tests/impulse.py   pw_delay's impulse response against theory, offline
+tests/delay.py     pw_delay in the graph: the delay exact to the sample,
+                   none of it reported as latency, no click on a change
 tests/live.py      one filter in the real graph: node and ports, live
                    parameter changes, reported latency, and the measured
                    frequency response of audio played through it

@@ -30,7 +30,8 @@ fi
 
 step "2. control protocol"
 run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
-                              bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain
+                              bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain \
+                              bin/pw_delay
 
 step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
@@ -96,11 +97,15 @@ run python3 tests/live.py bin/pw_gain -c 2 -g -12 \
     --audio "1000" "1000=-12+-0.3"
 run python3 tests/gain.py bin/pw_gain
 
+# the delay measured against itself, so the graph's own timing drops out:
+# exact to the sample, reported as no latency, and no click on a time change
+run python3 tests/delay.py bin/pw_delay
+
 step "4. filters composed into a chain"
 run python3 tests/chain.py
 
 step "5. parameters under load"
-for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit pw_gain; do
+for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit pw_gain pw_delay; do
     run python3 tests/stress.py bin/$b -c 2
 done
 # The compressor is a gain stage: its output is the input times

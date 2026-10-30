@@ -19,6 +19,7 @@ stays inside every parameter's declared range as filters change.
 """
 
 import os
+import subprocess
 import sys
 import time
 
@@ -209,15 +210,23 @@ def main():
                   "gr is an unknown name here", str(e))
 
         # "curve" is asked for, never sent unasked: one line, by name, with
-        # the points in it.
+        # the points in it -- on a filter whose --help offers --curve, and an
+        # unknown command on one whose does not.
         drain(f)
-        got = f.set("curve")
-        kind, _, pts = (got or "").partition(" ")[2].partition(" ")
-        pairs = [p.split(":") for p in pts.split(",")] if pts else []
-        check(got is not None and kind in ("freq", "level") and len(pairs) >= 20
-              and all(len(p) == 2 and float(p[0]) == float(p[0]) for p in pairs),
-              "curve answers with a %s curve of %d points" % (kind or "?", len(pairs)),
-              "got %r" % (got or "")[:60])
+        helptext = subprocess.run([binpath, "--help"], capture_output=True, text=True).stdout
+        if "--curve" in helptext:
+            got = f.set("curve")
+            kind, _, pts = (got or "").partition(" ")[2].partition(" ")
+            pairs = [p.split(":") for p in pts.split(",")] if pts else []
+            check(got is not None and kind in ("freq", "level") and len(pairs) >= 20
+                  and all(len(p) == 2 and float(p[0]) == float(p[0]) for p in pairs),
+                  "curve answers with a %s curve of %d points" % (kind or "?", len(pairs)),
+                  "got %r" % (got or "")[:60])
+        else:
+            f.send("curve")
+            e = f.errline(2.0)
+            check(e is not None and e.startswith("error:"),
+                  "no --curve in its help, and curve is an unknown command", str(e))
 
         rc = f.stop()
         check(rc == 0, "quit exits 0", "rc=%s" % rc)

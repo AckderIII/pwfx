@@ -579,8 +579,9 @@ mod against_the_real_filters {
             assert!(d.param("channels").unwrap().cli_only);
             assert!(d.param("latency").unwrap().readonly);
 
-            // Every filter in the tree draws a curve, and says so.
-            assert!(d.curve, "{} has no --curve", d.name);
+            // Every filter in the tree draws a curve but the delay, whose
+            // response is a comb far finer than any plot -- and each says so.
+            assert_eq!(d.curve, d.name != "pw_delay", "{}: --curve in its help", d.name);
 
             // A gain-reduction meter on exactly the filters that reduce
             // gain, read-only and so never a knob. The window draws the
