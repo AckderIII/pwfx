@@ -92,7 +92,10 @@ back to `default.json`; with one, that file or the preset of that name.
 **One pwfx at a time.** Two would ask for the same node names and fight
 over them, so the window and the headless mode both take a lock in
 `$XDG_RUNTIME_DIR`, and the second to start refuses and names the first's
-pid. The kernel drops the lock with the process, so a crash leaves nothing
+pid. A refused window says so in a dialog as well as on stderr, since from a
+launcher nobody is reading stderr; it looks at the holder's command line to
+tell another window, which is to be switched to, from the headless mode,
+which is to be stopped first. The kernel drops the lock with the process, so a crash leaves nothing
 stale behind.
 
 [`pwfx.service`](pwfx.service) is a systemd user unit for running it from
@@ -238,7 +241,7 @@ dropdown keeps a row's worth of space between itself and whatever follows.
 cargo test
 ```
 
-57 of them. Five are worth pointing at:
+58 of them. Five are worth pointing at:
 
 - `window_tests` drives the real widgets headlessly through Slint's testing
   backend — it clicks into a field, types, clicks away, and asserts the value

@@ -1,0 +1,43 @@
+// What the window shows instead of itself when another pwfx holds the lock.
+//
+// Started from a launcher, stderr goes nowhere anyone reads, so without this
+// a second launch would simply not open and look broken.
+
+import { Theme, Btn } from "theme.slint";
+
+export component RefusedWindow inherits Window {
+    in property <string> heading;
+    in property <string> body;
+    callback dismiss();
+
+    title: "pwfx";
+    background: Theme.bg;
+    width: 440px;
+    default-font-size: Theme.fs;
+
+    VerticalLayout {
+        padding: Theme.pad * 2;
+        spacing: Theme.pad;
+
+        Text {
+            text: root.heading;
+            font-size: Theme.fs-title;
+            font-weight: 600;
+            color: Theme.text;
+            wrap: word-wrap;
+        }
+        body := Text {
+            text: root.body;
+            color: Theme.text-dim;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            alignment: end;
+            ok := Btn {
+                text: "OK";
+                primary: true;
+                clicked => { root.dismiss(); }
+            }
+        }
+    }
+}

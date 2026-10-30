@@ -367,15 +367,34 @@ pub fn write(path: &Path, state: &AppState) -> Result<(), String> {
 /// user's PipeWire session, not a config directory: two `PWFX_CONFIG_DIR`s
 /// still share one graph. The kernel drops an `flock` with the process,
 /// however it ends, so there is nothing stale to clean up after a crash.
-pub fn lock_instance() -> Result<std::fs::File, String> {
+/// Why the lock was not taken.
+#[derive(Debug)]
+pub enum LockError {
+    /// Another pwfx has it; the pid it wrote, if it could be read.
+    Held(Option<u32>),
+    /// The lock file itself could not be made or opened.
+    Io(String),
+}
+
+impl std::fmt::Display for LockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            LockError::Held(Some(pid)) => write!(f, "pwfx is already running (pid {pid})"),
+            LockError::Held(None) => write!(f, "pwfx is already running"),
+            LockError::Io(e) => f.write_str(e),
+        }
+    }
+}
+
+pub fn lock_instance() -> Result<std::fs::File, LockError> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(config_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir).map_err(|e| LockError::Io(format!("{}: {e}", dir.display())))?;
     lock_at(&dir.join("pwfx.lock"))
 }
 
-fn lock_at(path: &Path) -> Result<std::fs::File, String> {
+fn lock_at(path: &Path) -> Result<std::fs::File, LockError> {
     use std::io::{Read, Seek, Write};
     use std::os::fd::AsRawFd;
 
@@ -385,17 +404,12 @@ fn lock_at(path: &Path) -> Result<std::fs::File, String> {
         .create(true)
         .truncate(false)
         .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+        .map_err(|e| LockError::Io(format!("{}: {e}", path.display())))?;
 
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         let mut pid = String::new();
         let _ = file.read_to_string(&mut pid);
-        let pid = pid.trim();
-        return Err(if pid.is_empty() {
-            "pwfx is already running".into()
-        } else {
-            format!("pwfx is already running (pid {pid})")
-        });
+        return Err(LockError::Held(pid.trim().parse().ok()));
     }
     // Only for the message above; the lock is the flock, not the contents.
     let _ = file.set_len(0);
@@ -446,7 +460,7 @@ mod tests {
         // flock belongs to the open file, not the process, so a second open
         // in the same process is refused just as another process would be.
         let err = lock_at(&path).unwrap_err();
-        assert!(err.contains(&std::process::id().to_string()), "{err}");
+        assert!(matches!(err, LockError::Held(Some(pid)) if pid == std::process::id()), "{err}");
         drop(first);
         let again = lock_at(&path).expect("free again once the holder lets go");
         drop(again);

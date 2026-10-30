@@ -156,6 +156,9 @@ fn main() -> ExitCode {
         Ok(f) => f,
         Err(e) => {
             eprintln!("pwfx: {e}");
+            if let (Mode::Window, state::LockError::Held(pid)) = (&mode, &e) {
+                show_refusal(*pid);
+            }
             return ExitCode::FAILURE;
         }
     };
@@ -165,6 +168,60 @@ fn main() -> ExitCode {
             window();
             ExitCode::SUCCESS
         }
+    }
+}
+
+/// Say why the window is not opening, in a window: started from a launcher
+/// there is nobody reading stderr, and a second launch that silently does
+/// nothing looks broken. Best effort -- with no display to put it on, the
+/// line already on stderr is all there is.
+fn show_refusal(pid: Option<u32>) {
+    let (heading, body) = refusal(pid, |pid| {
+        std::fs::read(format!("/proc/{pid}/cmdline")).map(|raw| {
+            raw.split(|b| *b == 0)
+                .any(|arg| arg == b"--headless")
+        }).ok()
+    });
+    let Ok(win) = RefusedWindow::new() else { return };
+    win.set_heading(heading.into());
+    win.set_body(body.into());
+    let weak = win.as_weak();
+    win.on_dismiss(move || {
+        if let Some(w) = weak.upgrade() {
+            let _ = w.hide();
+        }
+    });
+    let _ = win.run();
+}
+
+/// The dialog's heading and text. What to do about it depends on what holds
+/// the lock: another window is to be switched to, the headless mode is to be
+/// stopped. `headless` says which, or `None` when it cannot be told.
+fn refusal(pid: Option<u32>, headless: impl Fn(u32) -> Option<bool>) -> (String, String) {
+    const WHY: &str = "Only one pwfx can run at a time, because two would create \
+                       the same nodes and fight over them.";
+    let Some(pid) = pid else {
+        return ("pwfx is already running".into(), WHY.into());
+    };
+    match headless(pid) {
+        Some(true) => (
+            "pwfx is running without a window".into(),
+            format!(
+                "It is already running your chains in the background (pid {pid}). \
+                 {WHY}\n\n\
+                 To open the window, stop it first: systemctl --user stop pwfx \
+                 if it runs as a service, otherwise kill {pid}. Start it again \
+                 after closing the window to run what the window saved."
+            ),
+        ),
+        Some(false) => (
+            "pwfx is already open".into(),
+            format!("Another pwfx window is open (pid {pid}). {WHY}"),
+        ),
+        None => (
+            "pwfx is already running".into(),
+            format!("Another pwfx is running (pid {pid}). {WHY}"),
+        ),
     }
 }
 
@@ -1589,6 +1646,23 @@ mod arg_tests {
     }
 
     #[test]
+    fn the_refusal_says_what_to_do_about_what_is_running() {
+        let (h, b) = refusal(Some(42), |_| Some(true));
+        assert!(h.contains("without a window"), "{h}");
+        assert!(b.contains("systemctl --user stop pwfx") && b.contains("kill 42"), "{b}");
+
+        let (h, b) = refusal(Some(42), |_| Some(false));
+        assert!(h.contains("already open"), "{h}");
+        assert!(b.contains("42") && !b.contains("systemctl"), "{b}");
+
+        // Gone between the lock and the look, or no pid to look at.
+        let (_, b) = refusal(Some(42), |_| None);
+        assert!(b.contains("42"), "{b}");
+        let (h, _) = refusal(None, |_| unreachable!());
+        assert_eq!(h, "pwfx is already running");
+    }
+
+    #[test]
     fn the_command_line() {
         assert!(matches!(parse(&[]), Ok(Mode::Window)));
         assert!(matches!(parse(&["--help"]), Ok(Mode::Help)));
@@ -1803,6 +1877,7 @@ mod window_tests {
             an_endpoint_picker_survives_its_list_changing().await;
             the_bus_pane_comes_up_and_commits_its_name().await;
             a_picker_never_runs_into_the_control_beside_it().await;
+            the_refusal_dialog_wraps_and_closes().await;
             slint::quit_event_loop().unwrap();
         })
         .unwrap();
@@ -1947,6 +2022,42 @@ mod window_tests {
     /// Nothing about that fails to compile or looks wrong in the markup, so
     /// this measures the real window instead: every dropdown keeps a row's
     /// worth of space between itself and whatever button follows it.
+    /// The dialog a refused window shows instead. Its text is long and has
+    /// to wrap inside the dialog's width rather than widen the window off
+    /// the screen, and OK has to take it away -- which is what lets `main`
+    /// return and the process end.
+    async fn the_refusal_dialog_wraps_and_closes() {
+        let (heading, body) = refusal(Some(4242), |_| Some(true));
+        let win = RefusedWindow::new().unwrap();
+        win.set_heading(heading.into());
+        win.set_body(body.into());
+        let dismissed = Rc::new(Cell::new(false));
+        win.on_dismiss({
+            let dismissed = dismissed.clone();
+            move || dismissed.set(true)
+        });
+        win.show().unwrap();
+
+        let width = win.window().size().to_logical(win.window().scale_factor()).width;
+        let text = testing::ElementHandle::find_by_element_id(&win, "RefusedWindow::body")
+            .next()
+            .expect("the dialog has its body text");
+        assert!(text.size().width <= width, "the text fits the dialog");
+        assert!(
+            text.size().height > 3.0 * 13.0,
+            "a body this long wraps onto several lines, got {}",
+            text.size().height
+        );
+
+        testing::ElementHandle::find_by_element_id(&win, "RefusedWindow::ok")
+            .next()
+            .expect("the dialog has an OK button")
+            .single_click(PointerEventButton::Left)
+            .await;
+        assert!(dismissed.get(), "OK dismisses the dialog");
+        win.hide().unwrap();
+    }
+
     async fn a_picker_never_runs_into_the_control_beside_it() {
         let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
         win.set_presets(strings(&["voice".into(), "guitar".into()]));
