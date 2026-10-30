@@ -30,7 +30,7 @@ fi
 
 step "2. control protocol"
 run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
-                              bin/pw_gate bin/pw_comp bin/pw_limit
+                              bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain
 
 step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
@@ -88,11 +88,19 @@ run python3 tests/live.py bin/pw_limit -c 2 -C -1 -i 20 --meter \
 run python3 tests/live.py bin/pw_limit -c 2 -C -6 -i 20 -e 30 -k 10 \
     -- --audio "1000" "1000=4.46+-0.35" --peak "-6+-0.25"
 
+# pw_gain has no reference implementation, so this is its ground truth: a
+# plain -12 dB through live.py, and then each channel's level and polarity
+# and the absence of clicks, measured in gain.py
+run python3 tests/live.py bin/pw_gain -c 2 -g -12 \
+    -- "gain 30" ERROR "invert sideways" ERROR "mute on" "mute on" "mute off" "mute off" \
+    --audio "1000" "1000=-12+-0.3"
+run python3 tests/gain.py bin/pw_gain
+
 step "4. filters composed into a chain"
 run python3 tests/chain.py
 
 step "5. parameters under load"
-for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit; do
+for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit pw_gain; do
     run python3 tests/stress.py bin/$b -c 2
 done
 # The compressor is a gain stage: its output is the input times

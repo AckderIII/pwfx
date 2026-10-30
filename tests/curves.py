@@ -14,6 +14,8 @@ Every expectation is derived from first principles, not from the code:
   compressor   y = x + makeup below the threshold, thr + (x - thr)/ratio +
                makeup above it, for a hard knee.
   limiter      y = min(x + input-gain, ceiling).
+  gain         y = x + gain; muted, nothing; balance only ever turns a side
+               down, so the louder side's line is still y = x + gain.
   gate         rising, shut by the range until the threshold; falling, open
                down to threshold - hysteresis: a loop, in that order.
   EQ           all gains 0 is exactly flat; a bell peaks at its gain; a
@@ -98,6 +100,16 @@ check(err <= 0.006 and all(y <= x + 0.005 for x, y in pts),
 kind, pts = curve("pw_limit", "-C", "-1", "-i", "6")
 err = worst(pts, lambda x: min(x + 6, -1))
 check(kind == "level" and err <= 0.006, "pw_limit ceiling -1 input-gain 6", "worst %.4f dB" % err)
+
+for args, want, what in ((["-g", "6"], lambda x: x + 6, "gain +6"),
+                         (["-g", "-60"], lambda x: x - 60, "gain -60"),
+                         (["-g", "6", "-b", "70", "-i", "all"], lambda x: x + 6,
+                          "gain +6, balance 70, inverted: still the louder side, unsigned")):
+    kind, pts = curve("pw_gain", *args)
+    err = worst(pts, want)
+    check(kind == "level" and err <= 0.006, "pw_gain %s" % what, "worst %.4f dB" % err)
+kind, pts = curve("pw_gain", "-m")
+check(all(y <= -240 for _, y in pts), "pw_gain muted: nothing comes out")
 
 kind, pts = curve("pw_gate", "-t", "-40", "-T", "6", "-g", "20")
 xs = [x for x, _ in pts]

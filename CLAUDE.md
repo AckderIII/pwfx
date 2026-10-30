@@ -2,10 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Six audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`, `pw_limit`),
-each a standalone PipeWire filter node built on `pw_filter`, ported from the raw
-stdin/stdout reference implementations in `reference/`; plus `app/`, a Rust and
-Slint desktop app that drives them as plugins.
+Seven audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
+`pw_limit`, `pw_gain`), each a standalone PipeWire filter node built on
+`pw_filter`; the first six ported from the raw stdin/stdout reference
+implementations in `reference/`, `pw_gain` written here with no reference; plus
+`app/`, a Rust and Slint desktop app that drives them as plugins.
 
 ## Commands
 
@@ -145,6 +146,15 @@ This is why the lookahead filters keep their core in a header (`gate_dsp.h`,
 absorb-and-flush (drop the first L outputs, feed L frames of silence at EOF)
 around the same code so the two streams line up. `pw_lpf`/`pw_hpf`/`pw_eq` have
 no delay line and use `src/dsp.h` directly.
+
+**`pw_gain` is the one exception, on purpose.** It is a multiplication per
+sample with a 10 ms ramp, so there was nothing to port and nothing a reference
+written here could prove. It has no `tests/t_gain.c` -- which is what keeps
+`make` from looking for a `reference/gain.c` -- and its ground truth is
+arithmetic: `tests/curves.py` offline, and `tests/gain.py` in the graph, which
+measures each channel's level and polarity (by the sign of a skewed signal's
+third moment, which a delay cannot fake) and fails on a click. A new filter
+with real DSP should still come with a reference.
 
 `tests/live.py` measures rather than asserts liveness: it plays a test signal
 into the input ports, records the output ports, and compares the level at each

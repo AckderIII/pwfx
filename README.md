@@ -1,8 +1,9 @@
 # pw_* — PipeWire filter nodes
 
-Six audio filters, each a standalone PipeWire filter node built on
-`pw_filter`, ported from the raw stdin/stdout reference implementations in
-`reference/`.
+Seven audio filters, each a standalone PipeWire filter node built on
+`pw_filter`. Six are ported from the raw stdin/stdout reference
+implementations in `reference/`; `pw_gain` has none to port, and is checked
+against arithmetic instead.
 
 | filter | what it is | latency |
 |---|---|---|
@@ -12,6 +13,7 @@ Six audio filters, each a standalone PipeWire filter node built on
 | `pw_gate`  | noise gate with lookahead, hysteresis and hold | lookahead |
 | `pw_comp`  | compressor, log-domain detector, soft knee, lookahead | lookahead |
 | `pw_limit` | true-peak brickwall limiter | lookahead + 12 samples |
+| `pw_gain`  | gain, mute, polarity per side, balance; every change ramped | none |
 
 Each one takes its settings from the command line, prints them on stdout at
 startup, and accepts changes on stdin while audio is flowing.
@@ -266,8 +268,8 @@ Each stage reports its own latency, so PipeWire knows the total.
 
 ## What changed from the reference implementations
 
-The DSP did not. `make test` diffs every filter's core against the reference
-binary built from `reference/`, byte for byte, across orders, block sizes and
+The DSP did not. `make test` diffs every ported filter's core against the
+reference binary built from `reference/`, byte for byte, across orders, block sizes and
 edge settings — same coefficients, same transposed direct form II, same
 double-precision state, same denormal flushing.
 
@@ -327,6 +329,8 @@ tests/curves.py    every filter's --curve against theory: the bilinear
                    Butterworth response point for point, the compressor's
                    and limiter's static curves, the gate's loop
 tests/protocol.py  the stdin/stdout contract
+tests/gain.py      pw_gain per channel in the graph: each side's level and
+                   polarity, and no clicks while switching any of it
 tests/live.py      one filter in the real graph: node and ports, live
                    parameter changes, reported latency, and the measured
                    frequency response of audio played through it
