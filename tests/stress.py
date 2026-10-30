@@ -9,7 +9,14 @@ as filters gain settings. Random values are drawn across each declared range,
 including combinations the filter is expected to reject; a rejection is a
 pass, a crash or a NaN in the output is not.
 
-usage: stress.py BIN [filter-args...]
+"Bounded" means no louder than the parameters can explain. By default that
+is a peak under 100 (+40 dBFS), which no setting of the filters without a
+gain stage can reach. A filter that is a gain stage declares its largest
+gain with --max-gain DB, derived from its parameter ranges, and the bound
+becomes the peak played in raised by exactly that: output above it is not
+something any setting asked for, so it is a fault and not a loud setting.
+
+usage: stress.py [--max-gain DB] BIN [filter-args...]
 """
 
 import os
@@ -57,6 +64,10 @@ def discover(binpath):
 
 def main():
     binargs = sys.argv[1:]
+    max_gain = None
+    if binargs[:1] == ["--max-gain"]:
+        max_gain = float(binargs[1])
+        binargs = binargs[2:]
     binpath = binargs[0]
     name = os.path.basename(binpath) + "-stress"
     params = discover(binpath)
@@ -97,7 +108,7 @@ def main():
     t = threading.Thread(target=hammer, daemon=True)
     t.start()
     try:
-        mono, _, _ = run_audio(name, 48000, 2, [220, 3000], seconds=3.0)
+        mono, _, src_db = run_audio(name, 48000, 2, [220, 3000], seconds=3.0)
     finally:
         stop.set()
         t.join(timeout=5)
@@ -105,6 +116,12 @@ def main():
     alive = f.p.poll() is None
     bad = [v for v in mono if v != v or abs(v) == float("inf")]
     loud = max((abs(v) for v in mono), default=0.0)
+    if max_gain is None:
+        bound, why = 100.0, "under 100"
+    else:
+        # 1% over, for float rounding: the bound itself is exact.
+        bound = 10 ** ((src_db + max_gain) / 20.0) * 1.01
+        why = "within the %+.1f dB the settings allow, %.4g" % (max_gain, bound)
 
     ok = True
     for cond, what, detail in (
@@ -113,7 +130,8 @@ def main():
              "%d bad samples" % len(bad)),
             (len(mono) > 1000, "audio kept flowing",
              "%d frames recorded" % len(mono)),
-            (loud < 100.0, "output stayed bounded", "peak %.3f" % loud)):
+            (loud < bound, "output stayed bounded: peak %.4g, %s" % (loud, why),
+             "")):
         print(("  ok   " if cond else "  FAIL ") + what +
               (("  -- " + detail) if detail and not cond else ""))
         ok = ok and cond

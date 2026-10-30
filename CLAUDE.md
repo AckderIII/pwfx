@@ -33,7 +33,7 @@ python3 tests/protocol.py bin/pw_eq  # stdin/stdout contract, one or more filter
 python3 tests/live.py bin/pw_lpf -c 2 -f 1000 \
     -- "cutoff 500" "cutoff 500" \
     --audio "200,8000" "200=0+-0.6,8000=-72+-7"
-python3 tests/stress.py bin/pw_comp -c 2
+python3 tests/stress.py --max-gain 119.2 bin/pw_comp -c 2   # bound: see all.sh
 python3 tests/chain.py
 ```
 
