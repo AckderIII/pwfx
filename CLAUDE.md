@@ -42,6 +42,9 @@ python3 tests/chain.py
 `make` and the harnesses are driven by wildcards: a new `src/pw_X.c` and
 `tests/t_X.c` are picked up with no Makefile edit. Add the comparison cases for
 a new filter to `tests/cases.sh`, and its live expectations to `tests/all.sh`.
+Every filter and harness depends on every header in `src/`, because the cores
+live in headers shared by both; depending on `dsp.h` alone once rebuilt the
+reference side of a comparison and not the side compared with it.
 
 Filters do not auto-connect (they are plain filter nodes with no `media.class`),
 so wire them by hand: `pw-link some-source pw_lpf`. When driving them from

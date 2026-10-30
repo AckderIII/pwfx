@@ -17,6 +17,12 @@ REFS      = $(patsubst tests/t_%.c,%,$(wildcard tests/t_*.c))
 BIN       = bin
 OBJ       = build
 
+# Every header in src/. The DSP cores live in headers shared between a filter
+# and its test harness (gate_dsp.h, comp_dsp.h, ...), so a change to one has
+# to rebuild both -- depending on dsp.h alone rebuilt the reference side of a
+# comparison and not the side it is compared with.
+HEADERS   = $(wildcard src/*.h)
+
 all: $(FILTERS:%=$(BIN)/%)
 
 $(BIN) $(OBJ) $(BIN)/ref:
@@ -25,7 +31,7 @@ $(BIN) $(OBJ) $(BIN)/ref:
 $(OBJ)/pwf.o: src/pwf.c src/pwf.h | $(OBJ)
 	$(CC) $(CFLAGS) $(WARN) $(PW_CFLAGS) -c -o $@ $<
 
-$(BIN)/pw_%: src/pw_%.c src/pwf.h src/dsp.h $(OBJ)/pwf.o | $(BIN)
+$(BIN)/pw_%: src/pw_%.c $(HEADERS) $(OBJ)/pwf.o | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) $(PW_CFLAGS) -o $@ $< $(OBJ)/pwf.o $(PW_LIBS) $(LIBS)
 
 # The reference implementations, built so the tests can compare against them.
@@ -34,7 +40,7 @@ $(BIN)/ref/%: reference/%.c | $(BIN)/ref
 
 # Offline harnesses: the same DSP core as the filter, driven from stdin so it
 # can be diffed against the reference byte for byte.
-$(BIN)/t_%: tests/t_%.c src/dsp.h | $(BIN)
+$(BIN)/t_%: tests/t_%.c $(HEADERS) | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) -o $@ $< $(LIBS)
 
 refs: $(REFS:%=$(BIN)/ref/%)
