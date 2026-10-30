@@ -254,6 +254,12 @@ Two consequences to keep in mind:
   `changed options` as well as `changed index` -- both, because the list can
   change while the index stays the same number, and that is the case the
   widget gets wrong. Do not use a bare `ComboBox` for a value the model owns.
+- **Hand a dropdown a new list only when the list changed.** A new options
+  model rebuilds an open popup under the pointer: it flickers and the click is
+  lost. Every list in `refresh()` is compared against a key in `Models` first,
+  and `is_meter_reading()` keeps meter lines -- `gr` included -- from causing a
+  full refresh at all. `a_refresh_leaves_lists_that_did_not_change_alone`
+  drives the real `refresh()` and fails on either.
   `Picker` *inherits* `ComboBox` rather than wrapping one, because a wrapper
   is a layout and a layout cannot give a child less than the 160px the widget
   asks for -- a narrower width on the wrapper left the box hanging out of it

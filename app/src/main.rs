@@ -339,8 +339,7 @@ impl App {
                     AppEvent::Proc(p) => {
                         // A meter reading moves one number; anything else can
                         // move a value the window is showing.
-                        let level = matches!(&p, ProcEvent::Param { name, .. }
-                                             if name == "in-level" || name == "out-level");
+                        let level = is_meter_reading(&p);
                         app.engine.borrow_mut().on_proc_event(p);
                         if level {
                             meters = true;
@@ -548,7 +547,10 @@ impl App {
             );
 
             let widths: Vec<String> = (1..=b.width.max(8)).map(ui::width_label).collect();
-            win.set_bus_width_options(strings(&widths));
+            if m.bus_widths_key != widths {
+                win.set_bus_width_options(strings(&widths));
+                m.bus_widths_key = widths;
+            }
             win.set_bus_width_index(b.width as i32 - 1);
 
             let uses: Vec<BusUseRow> = e
@@ -563,7 +565,11 @@ impl App {
                     },
                 })
                 .collect();
-            win.set_bus_uses(ModelRc::new(VecModel::from(uses)));
+            let key: Vec<String> = uses.iter().map(|u| format!("{}|{}", u.chain, u.direction)).collect();
+            if m.bus_uses_key != key {
+                win.set_bus_uses(ModelRc::new(VecModel::from(uses)));
+                m.bus_uses_key = key;
+            }
         }
 
         // --- plugins available to add ---
@@ -622,7 +628,10 @@ impl App {
         win.set_chain_name(chain.name.as_str().into());
         win.set_chain_enabled(chain.enabled);
         let widths: Vec<String> = (1..=chain.width.max(8)).map(ui::width_label).collect();
-        win.set_width_options(strings(&widths));
+        if m.widths_key != widths {
+            win.set_width_options(strings(&widths));
+            m.widths_key = widths;
+        }
         win.set_width_index(chain.width as i32 - 1);
 
         // --- the two endpoints ---
@@ -802,7 +811,21 @@ impl App {
     }
 }
 
+/// Whether a line from a filter is only a meter moving, which redraws the
+/// meters and nothing else. Anything else is a full refresh -- and a full
+/// refresh many times a second keeps rebuilding every list in the window,
+/// so a reading missing from here is a dropdown that cannot be used.
+fn is_meter_reading(p: &ProcEvent) -> bool {
+    matches!(p, ProcEvent::Param { name, .. }
+             if matches!(name.as_str(), "in-level" | "out-level" | "gr"))
+}
+
 /// The models the window is bound to, kept alive between refreshes.
+///
+/// Every list goes into the window only when its contents have changed --
+/// hence the keys. Handing a dropdown a new list while its popup is open
+/// rebuilds the popup under the pointer: it flickers, and the click that
+/// was on its way to an entry lands on nothing.
 #[derive(Default)]
 struct Models {
     /// One entry per stage, identifying it. A change here, and only a change
@@ -814,6 +837,9 @@ struct Models {
     chains_key: Vec<String>,
     buses_key: Vec<String>,
     bus_kinds_key: Vec<String>,
+    bus_widths_key: Vec<String>,
+    bus_uses_key: Vec<String>,
+    widths_key: Vec<String>,
     source_key: Vec<String>,
     sink_key: Vec<String>,
     plugins_key: Vec<String>,
@@ -1896,6 +1922,7 @@ mod window_tests {
             a_picker_never_runs_into_the_control_beside_it().await;
             the_refusal_dialog_wraps_and_closes().await;
             a_gr_strip_shows_only_where_there_is_a_reduction().await;
+            a_refresh_leaves_lists_that_did_not_change_alone().await;
             slint::quit_event_loop().unwrap();
         })
         .unwrap();
@@ -2074,6 +2101,77 @@ mod window_tests {
             .await;
         assert!(dismissed.get(), "OK dismisses the dialog");
         win.hide().unwrap();
+    }
+
+    /// The bug this was written for: a `gr` line counted as a reason to
+    /// refresh everything, and the dropdowns were handed a new list on every
+    /// refresh, so with a compressor running a dozen times a second an open
+    /// dropdown was rebuilt under the pointer -- it flickered, and no entry
+    /// could be picked. Driven through the real `App::refresh`, which is
+    /// where it was.
+    async fn a_refresh_leaves_lists_that_did_not_change_alone() {
+        assert!(is_meter_reading(&ProcEvent::Param {
+            node: "pwfx.voice.comp".into(),
+            name: "gr".into(),
+            value: "6.0".into(),
+        }));
+
+        let mut st = state::AppState::default();
+        st.buses.push(Bus {
+            id: "music".into(),
+            name: "Music".into(),
+            enabled: true,
+            width: 2,
+            kind: BusKind::Sink,
+        });
+        st.chains.push(Chain {
+            id: "voice".into(),
+            name: "Voice".into(),
+            enabled: false,
+            width: 2,
+            stages: Vec::new(),
+            input: None,
+            output: Some(Endpoint {
+                node: "pwfx.bus.music".into(),
+                label: "Music".into(),
+                mapping: Mapping::Auto,
+            }),
+        });
+        let engine = Engine::new(Vec::new(), st, Arc::new(|_| {}));
+
+        let win = AppWindow::new().unwrap();
+        let app = App {
+            engine: Rc::new(RefCell::new(engine)),
+            view: Rc::new(RefCell::new(View {
+                focus: Focus::Bus,
+                ..Default::default()
+            })),
+            win: win.as_weak(),
+            pw: Rc::new(pwthread::start(|_| {})),
+            dirty: Rc::new(Cell::new(false)),
+            models: Rc::new(RefCell::new(Models::default())),
+            links: Rc::new(Cell::new((0, 0))),
+        };
+
+        app.refresh();
+        let (uses, widths) = (win.get_bus_uses(), win.get_bus_width_options());
+        assert_eq!(uses.row_count(), 1);
+        app.refresh();
+        assert!(win.get_bus_uses() == uses, "the chain rows were replaced");
+        assert!(win.get_bus_width_options() == widths, "the width list was replaced");
+
+        // A real change still gets through.
+        app.engine.borrow_mut().state.chains[0].output = None;
+        app.refresh();
+        assert!(win.get_bus_uses() != uses);
+        assert_eq!(win.get_bus_uses().row_count(), 0);
+
+        // And the chain view's width list, which had the same fault.
+        app.view.borrow_mut().focus = Focus::Chain;
+        app.refresh();
+        let widths = win.get_width_options();
+        app.refresh();
+        assert!(win.get_width_options() == widths, "the chain width list was replaced");
     }
 
     /// The third meter strip is there for a dynamics filter and absent for
