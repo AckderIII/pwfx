@@ -12,6 +12,16 @@ make app          # from the top of the tree; builds the filters too
 
 ![the window](doc/window.png)
 
+Or with no window at all, which is how a microphone chain wants to run once
+it is set up:
+
+```sh
+./app/target/release/pwfx --headless            # what the window last left
+./app/target/release/pwfx --headless podcast     # a preset, or a path to a file
+```
+
+See [Running without the window](#running-without-the-window).
+
 ## What it does
 
 - **Finds the filters itself.** Every `pw_*` program on the search path is
@@ -56,6 +66,37 @@ make app          # from the top of the tree; builds the filters too
   figure is what the filter last reported: a peak hold that falls back at
   20 dB/s, so the highest reading over a run is the one to trust. Silence
   reads as `—` rather than as the filters' -240 dB floor.
+
+## Running without the window
+
+`pwfx --headless [FILE]` runs the same engine and the same PipeWire thread
+as the window, driven by a plain loop instead of the window's timers.
+Without a FILE it runs what the window last left, `session.json`, falling
+back to `default.json`; with one, that file or the preset of that name.
+
+- **It never saves.** The file it started from is the authority. Edit that
+  file, or close the service, use the window and start it again.
+- **SIGHUP reloads.** The re-read state goes through the same comparison as
+  a loaded preset, so only what moved restarts and the rest keeps playing.
+  A file that no longer reads is reported and what is running stays.
+- **SIGTERM or Ctrl-C stops** it in the same order the window does: links,
+  then filters, then buses.
+- **A file that will not read is fatal at start**, unlike in the window. A
+  window can start empty and say why; a service that starts empty looks
+  like it works and does nothing.
+- The meters are off, since there is nobody to look at them.
+- Everything goes to stderr, which under systemd is the journal: each
+  filter's state, links going down and coming back as devices leave and
+  return, and any error.
+
+**One pwfx at a time.** Two would ask for the same node names and fight
+over them, so the window and the headless mode both take a lock in
+`$XDG_RUNTIME_DIR`, and the second to start refuses and names the first's
+pid. The kernel drops the lock with the process, so a crash leaves nothing
+stale behind.
+
+[`pwfx.service`](pwfx.service) is a systemd user unit for running it from
+login; its comments have the three commands to install it.
 
 ## How it is put together
 
@@ -113,7 +154,8 @@ and names do not.
 | `src/engine.rs` | state → processes → wanted buses and links |
 | `src/state.rs` | the save file, which is the whole user-visible model |
 | `src/ui.rs` | slider positions and value formatting |
-| `src/main.rs` | the window: state into models, clicks into edits |
+| `src/main.rs` | the command line, and the window: state into models, clicks into edits |
+| `src/headless.rs` | the same, with no window: a loop, signals, and the save file read but never written |
 | `ui/*.slint` | the window itself |
 
 ## Environment
@@ -196,7 +238,7 @@ dropdown keeps a row's worth of space between itself and whatever follows.
 cargo test
 ```
 
-55 of them. Five are worth pointing at:
+57 of them. Five are worth pointing at:
 
 - `window_tests` drives the real widgets headlessly through Slint's testing
   backend — it clicks into a field, types, clicks away, and asserts the value

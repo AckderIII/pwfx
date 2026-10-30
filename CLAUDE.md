@@ -189,6 +189,12 @@ from it, not adding an action that does something. `PwCmd::SetNodes` is
 `SetLinks` one level up: the complete set of nodes that ought to exist, not a
 create or a destroy.
 
+**The window is optional.** `pwfx --headless` (`app/src/headless.rs`) runs
+the same engine and PipeWire thread from a plain loop; `boot`, `apply` and
+`stop` in `main.rs` are shared by both, so anything the engine needs on every
+graph change or every second has to go through them, not into a Slint timer.
+Only one pwfx runs at a time (`state::lock_instance`), window or not.
+
 **Destroy a PipeWire object by dropping its proxy.** The drop calls
 `pw_proxy_destroy`, which already asks the server to destroy it;
 `Core::destroy_object` on top asks twice, and the "unknown resource" error the

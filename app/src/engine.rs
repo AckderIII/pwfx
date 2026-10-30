@@ -500,6 +500,16 @@ impl Engine {
 
     /// Forget how often things have failed to start.
     ///
+    /// Take in a new snapshot of the graph.
+    pub fn set_graph(&mut self, g: Graph) {
+        if g.connected && !self.graph.connected {
+            // The daemon is back. Whatever was stopping the filters from
+            // connecting is gone with it.
+            self.clear_backoff();
+        }
+        self.graph = g;
+    }
+
     /// Called when the daemon comes back: whatever was stopping the filters
     /// from connecting has just changed, so the accumulated backoff is stale
     /// and waiting out another thirty seconds of it would be nonsense.

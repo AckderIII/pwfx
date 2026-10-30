@@ -358,6 +358,52 @@ pub fn write(path: &Path, state: &AppState) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Hold the one-per-user lock for as long as the returned file is kept open.
+///
+/// Two copies of the app would ask for the same node names -- the same
+/// `pwfx.voice.hpf`, the same `pwfx.bus.mic` -- and fight over them, so the
+/// window and the headless mode both take this and the second one to start
+/// refuses. It sits in `$XDG_RUNTIME_DIR` because what it guards is the
+/// user's PipeWire session, not a config directory: two `PWFX_CONFIG_DIR`s
+/// still share one graph. The kernel drops an `flock` with the process,
+/// however it ends, so there is nothing stale to clean up after a crash.
+pub fn lock_instance() -> Result<std::fs::File, String> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(config_dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    lock_at(&dir.join("pwfx.lock"))
+}
+
+fn lock_at(path: &Path) -> Result<std::fs::File, String> {
+    use std::io::{Read, Seek, Write};
+    use std::os::fd::AsRawFd;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let mut pid = String::new();
+        let _ = file.read_to_string(&mut pid);
+        let pid = pid.trim();
+        return Err(if pid.is_empty() {
+            "pwfx is already running".into()
+        } else {
+            format!("pwfx is already running (pid {pid})")
+        });
+    }
+    // Only for the message above; the lock is the flock, not the contents.
+    let _ = file.set_len(0);
+    let _ = file.rewind();
+    let _ = writeln!(file, "{}", std::process::id());
+    Ok(file)
+}
+
 /// What to start with: the last session if there is one, otherwise the saved
 /// default, otherwise nothing.
 pub fn startup() -> (AppState, Option<String>) {
@@ -392,6 +438,20 @@ pub fn list_presets() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_instance_holds_the_lock() {
+        let path = std::env::temp_dir().join(format!("pwfx-lock-test-{}", std::process::id()));
+        let first = lock_at(&path).expect("the first one gets it");
+        // flock belongs to the open file, not the process, so a second open
+        // in the same process is refused just as another process would be.
+        let err = lock_at(&path).unwrap_err();
+        assert!(err.contains(&std::process::id().to_string()), "{err}");
+        drop(first);
+        let again = lock_at(&path).expect("free again once the holder lets go");
+        drop(again);
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn slugs_are_safe_for_node_names() {

@@ -25,6 +25,7 @@
 
 mod engine;
 mod graph;
+mod headless;
 mod plugin;
 mod process;
 mod pwthread;
@@ -35,6 +36,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver};
+use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,7 +47,7 @@ use engine::Engine;
 use graph::{Dir, Mapping};
 use plugin::ParamKind;
 use process::ProcEvent;
-use pwthread::{NodeSpec, PwCmd, PwEvent};
+use pwthread::PwEvent;
 use state::{Bus, BusKind, Chain, Endpoint, Stage};
 
 slint::include_modules!();
@@ -103,15 +106,77 @@ struct App {
     /// refresh shows the current figure rather than the one from whenever a
     /// link last moved.
     links: Rc<Cell<(usize, usize)>>,
-    last_links: Rc<RefCell<Vec<pwthread::LinkSpec>>>,
-    last_nodes: Rc<RefCell<Vec<NodeSpec>>>,
 }
 
-fn main() {
+const USAGE: &str = "\
+usage: pwfx                     open the window
+       pwfx --headless [FILE]   run the chains and buses with no window
+
+FILE is a save file, or the name of a preset. Without one, --headless runs
+what the window last left: session.json, or default.json if there is none.
+
+With no window, nothing is saved. SIGHUP reads FILE again and changes only
+what moved in it; SIGTERM or Ctrl-C stops everything and removes the buses.
+
+Only one pwfx runs at a time, window or not.";
+
+enum Mode {
+    Window,
+    Headless(Option<PathBuf>),
+    Help,
+}
+
+fn parse_args(args: &[String]) -> Result<Mode, String> {
+    match args {
+        [] => Ok(Mode::Window),
+        [h] if h == "-h" || h == "--help" => Ok(Mode::Help),
+        [h] if h == "--headless" => Ok(Mode::Headless(None)),
+        [h, file] if h == "--headless" && !file.starts_with('-') => {
+            Ok(Mode::Headless(Some(file.into())))
+        }
+        _ => Err(format!("unexpected arguments: {}", args.join(" "))),
+    }
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mode = match parse_args(&args) {
+        Ok(Mode::Help) => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Ok(mode) => mode,
+        Err(e) => {
+            eprintln!("pwfx: {e}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    // Held until main returns, which is after everything has been stopped.
+    let _lock = match state::lock_instance() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("pwfx: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match mode {
+        Mode::Headless(file) => headless::run(file),
+        _ => {
+            window();
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+/// What both modes start the same way: the filters found, the engine built
+/// around the given state, and the PipeWire thread started, with everything
+/// either of them reports arriving on the one receiver.
+fn boot(
+    state: state::AppState,
+    load_error: Option<String>,
+) -> (Engine, pwthread::PwHandle, Receiver<AppEvent>) {
     let dirs = plugin::search_path();
     let (plugins, errors) = plugin::discover(&dirs);
-
-    let (state, load_error) = state::startup();
 
     let (tx, rx) = channel::<AppEvent>();
     let proc_sink: process::EventSink = {
@@ -146,6 +211,12 @@ fn main() {
     if let Some(e) = load_error {
         engine.note(e, true);
     }
+    (engine, pw, rx)
+}
+
+fn window() {
+    let (state, load_error) = state::startup();
+    let (engine, pw, rx) = boot(state, load_error);
 
     let win = AppWindow::new().expect("cannot create the window");
     let app = App {
@@ -159,8 +230,6 @@ fn main() {
         dirty: Rc::new(Cell::new(false)),
         models: Rc::new(RefCell::new(Models::default())),
         links: Rc::new(Cell::new((0, 0))),
-        last_links: Rc::new(RefCell::new(Vec::new())),
-        last_nodes: Rc::new(RefCell::new(Vec::new())),
     };
 
     app.wire(&win);
@@ -172,17 +241,27 @@ fn main() {
 
     win.run().expect("the event loop failed");
 
-    // Leaving: stop the filters before the links, so the graph never sees a
-    // node disappear out from under a link it is still carrying. The buses go
-    // last, for the same reason and one level up -- and they would go anyway
-    // when the PipeWire thread drops its proxies, so this is only about the
-    // order it happens in.
     app.save_session();
-    app.last_links.borrow_mut().clear();
-    app.pw.send(PwCmd::SetLinks(Vec::new()));
-    app.engine.borrow_mut().shutdown();
-    app.last_nodes.borrow_mut().clear();
-    app.pw.send(PwCmd::SetNodes(Vec::new()));
+    stop(&mut app.engine.borrow_mut(), &app.pw);
+}
+
+/// Reconcile the processes, and declare the buses and the links the state
+/// implies. The buses go first, so that a chain and the bus it was just
+/// pointed at cannot arrive in the wrong order.
+fn apply(engine: &mut Engine, pw: &pwthread::PwHandle) {
+    let (nodes, links) = engine.apply();
+    pw.declare_nodes(nodes);
+    pw.declare_links(links);
+}
+
+/// Leave, in order: the links before the filters, so the graph never sees a
+/// node disappear out from under a link it is still carrying, and the buses
+/// last, for the same reason one level up. They would all go anyway when the
+/// PipeWire thread drops its proxies, so this is only about the order.
+fn stop(engine: &mut Engine, pw: &pwthread::PwHandle) {
+    pw.declare_links(Vec::new());
+    engine.shutdown();
+    pw.declare_nodes(Vec::new());
 }
 
 impl App {
@@ -213,14 +292,7 @@ impl App {
                         }
                     }
                     AppEvent::Pw(PwEvent::Graph(g)) => {
-                        let mut e = app.engine.borrow_mut();
-                        if g.connected && !e.graph.connected {
-                            // The daemon is back. Whatever was stopping the
-                            // filters from connecting is gone with it.
-                            e.clear_backoff();
-                        }
-                        e.graph = g;
-                        drop(e);
+                        app.engine.borrow_mut().set_graph(g);
                         full = true;
                         relink = true;
                     }
@@ -267,24 +339,8 @@ impl App {
         timer
     }
 
-    /// Reconcile the processes, and publish the buses and the links the state
-    /// implies.
-    ///
-    /// Each set is only sent when it has actually moved: dragging a slider
-    /// reconciles processes twenty times a second and would otherwise wake
-    /// the PipeWire thread just as often to be told nothing changed. The
-    /// buses go first, so that a chain and the bus it was just pointed at
-    /// cannot arrive in the wrong order.
     fn apply(&self) {
-        let (nodes, links) = self.engine.borrow_mut().apply();
-        if *self.last_nodes.borrow() != nodes {
-            *self.last_nodes.borrow_mut() = nodes.clone();
-            self.pw.send(PwCmd::SetNodes(nodes));
-        }
-        if *self.last_links.borrow() != links {
-            *self.last_links.borrow_mut() = links.clone();
-            self.pw.send(PwCmd::SetLinks(links));
-        }
+        apply(&mut self.engine.borrow_mut(), &self.pw);
     }
 
     /// Every edit goes through here: change the state, then let the engine
@@ -1521,6 +1577,26 @@ fn endpoint_mut(e: &mut Engine, chain: usize, dir: Dir) -> Option<&mut Endpoint>
     match dir {
         Dir::Out => c.input.as_mut(),
         Dir::In => c.output.as_mut(),
+    }
+}
+
+#[cfg(test)]
+mod arg_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Mode, String> {
+        parse_args(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn the_command_line() {
+        assert!(matches!(parse(&[]), Ok(Mode::Window)));
+        assert!(matches!(parse(&["--help"]), Ok(Mode::Help)));
+        assert!(matches!(parse(&["--headless"]), Ok(Mode::Headless(None))));
+        assert!(matches!(parse(&["--headless", "mic"]),
+                         Ok(Mode::Headless(Some(f))) if f == PathBuf::from("mic")));
+        assert!(parse(&["--headless", "--verbose"]).is_err());
+        assert!(parse(&["mic.json"]).is_err());
     }
 }
 

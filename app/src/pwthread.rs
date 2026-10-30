@@ -123,11 +123,30 @@ type Emit = Rc<dyn Fn(PwEvent)>;
 pub struct PwHandle {
     tx: pw::channel::Sender<PwCmd>,
     join: Option<std::thread::JoinHandle<()>>,
+    /// The sets last declared, so an unchanged one is not sent again.
+    last_nodes: RefCell<Vec<NodeSpec>>,
+    last_links: RefCell<Vec<LinkSpec>>,
 }
 
 impl PwHandle {
-    pub fn send(&self, cmd: PwCmd) {
-        let _ = self.tx.send(cmd);
+    /// Declare the buses that ought to exist.
+    ///
+    /// Only sent when it has actually moved: dragging a slider reconciles
+    /// twenty times a second and would otherwise wake the PipeWire thread
+    /// just as often to be told nothing changed.
+    pub fn declare_nodes(&self, nodes: Vec<NodeSpec>) {
+        if *self.last_nodes.borrow() != nodes {
+            *self.last_nodes.borrow_mut() = nodes.clone();
+            let _ = self.tx.send(PwCmd::SetNodes(nodes));
+        }
+    }
+
+    /// Declare the links that ought to exist, on the same terms.
+    pub fn declare_links(&self, links: Vec<LinkSpec>) {
+        if *self.last_links.borrow() != links {
+            *self.last_links.borrow_mut() = links.clone();
+            let _ = self.tx.send(PwCmd::SetLinks(links));
+        }
     }
 }
 
@@ -151,6 +170,8 @@ pub fn start(on_event: impl Fn(PwEvent) + Send + 'static) -> PwHandle {
     PwHandle {
         tx,
         join: Some(join),
+        last_nodes: RefCell::new(Vec::new()),
+        last_links: RefCell::new(Vec::new()),
     }
 }
 

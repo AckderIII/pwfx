@@ -1,0 +1,32 @@
+# pwfx without its window, from login: the chains and buses the window last
+# left, kept running whether or not the window is open.
+#
+#   ln -s "$PWD/target/release/pwfx" ~/.local/bin/pwfx
+#   cp pwfx.service ~/.config/systemd/user/
+#   systemctl --user enable --now pwfx
+#
+# The symlink is enough for it to find the filters: pwfx resolves it back to
+# the tree and looks in the tree's bin/. Otherwise set PWFX_FILTER_PATH below.
+#
+# Only one pwfx runs at a time, so stop this before opening the window, and
+# start it again after closing it to run what the window saved:
+#
+#   systemctl --user stop pwfx; pwfx; systemctl --user start pwfx
+#
+# `systemctl --user reload pwfx` reads the save file again without stopping
+# anything that did not change.
+
+[Unit]
+Description=pwfx filter chains (headless)
+After=pipewire.service wireplumber.service
+Wants=pipewire.service
+
+[Service]
+ExecStart=%h/.local/bin/pwfx --headless
+ExecReload=/bin/kill -HUP $MAINPID
+# Environment=PWFX_FILTER_PATH=%h/.local/lib/pwfx
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
