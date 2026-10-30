@@ -71,6 +71,13 @@ See [Running without the window](#running-without-the-window).
 - **Saving.** The session is written out as you work. Named presets and a
   "default state" that **Restore default** goes back to are the same file
   format, so they are interchangeable and editable by hand.
+- **Response curves.** Every stage draws what it does under its knobs: the
+  frequency response of a high-pass, low-pass or EQ, on a log axis from
+  20 Hz to 20 kHz, and the static input-to-output curve of a compressor,
+  gate or limiter, square, so a ratio reads as a slope and a gate's
+  hysteresis as a loop. The filter computes it from the coefficients it is
+  running and the app only draws the points, asking again whenever the
+  filter reports a change.
 - **Meters.** Every stage shows the input and output peak levels the filter
   reports, as a bar and as a figure in dBFS, and the latency it adds. The
   figure is what the filter last reported: a peak hold that falls back at
@@ -256,7 +263,10 @@ dropdown keeps a row's worth of space between itself and whatever follows.
 cargo test
 ```
 
-67 of them. Five are worth pointing at:
+69 of them, and one more that is not a test but a way to look: run
+`PWFX_RENDER_OUT=/tmp/w.rgba cargo test render_the_window -- --ignored` and
+it renders the window, with real filters and their curves, to raw RGBA
+off-screen. Five of the tests are worth pointing at:
 
 - `window_tests` drives the real widgets headlessly through Slint's testing
   backend — it clicks into a field, types, clicks away, and asserts the value

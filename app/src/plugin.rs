@@ -125,6 +125,9 @@ pub struct PluginDesc {
     pub summary: String,
     pub path: PathBuf,
     pub params: Vec<ParamDesc>,
+    /// Whether it answers "curve" with its response. A filter lists
+    /// `--curve` in its help exactly when it does.
+    pub curve: bool,
 }
 
 impl PluginDesc {
@@ -315,6 +318,7 @@ pub fn parse_help(text: &str) -> Result<PluginDesc, String> {
         summary: summary.trim().to_string(),
         path: PathBuf::new(),
         params,
+        curve: text.lines().any(|l| l.trim_start().starts_with("--curve ")),
     })
 }
 
@@ -574,6 +578,9 @@ mod against_the_real_filters {
             }
             assert!(d.param("channels").unwrap().cli_only);
             assert!(d.param("latency").unwrap().readonly);
+
+            // Every filter in the tree draws a curve, and says so.
+            assert!(d.curve, "{} has no --curve", d.name);
 
             // A gain-reduction meter on exactly the filters that reduce
             // gain, read-only and so never a knob. The window draws the

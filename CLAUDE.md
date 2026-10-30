@@ -279,6 +279,12 @@ Two consequences to keep in mind:
   `changed options` as well as `changed index` -- both, because the list can
   change while the index stays the same number, and that is the case the
   widget gets wrong. Do not use a bare `ComboBox` for a value the model owns.
+- **Look at the window before calling a UI change done.**
+  `PWFX_RENDER_OUT=/tmp/w.rgba cargo test render_the_window -- --ignored`
+  renders a chain of real filters through the real `refresh()` with Slint's
+  software renderer and writes raw RGBA (a `W H` line, then pixels). That is
+  how the stretched-but-letterboxed curve plots were caught: Slint's `Path`
+  keeps its aspect ratio unless told `fit: fill`.
 - **Hand a dropdown a new list only when the list changed.** A new options
   model rebuilds an open popup under the pointer: it flickers and the click is
   lost. Every list in `refresh()` is compared against a key in `Models` first,

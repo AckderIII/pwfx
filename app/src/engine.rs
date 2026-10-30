@@ -68,6 +68,11 @@ pub struct Runtime {
     pub out_level: f32,
     /// Gain reduction, dB >= 0, from filters that have a `gr` meter.
     pub gr: f32,
+    /// The response the filter last reported, for filters that draw one.
+    pub curve: Option<Curve>,
+    /// Something it reported may have moved the curve, which it has not
+    /// been asked for since.
+    curve_stale: bool,
     pub latency: u32,
     pub last_error: String,
 }
@@ -106,6 +111,13 @@ impl Engine {
 
     pub fn runtime(&self, node: &str) -> Option<&Runtime> {
         self.runtime.get(node)
+    }
+
+    /// A stage's runtime state, made if need be, for tests that want a
+    /// stage to look as though its filter had reported something.
+    #[cfg(test)]
+    pub fn runtime_mut(&mut self, node: &str) -> &mut Runtime {
+        self.runtime.entry(node.to_string()).or_default()
     }
 
     pub fn note(&mut self, text: impl Into<String>, error: bool) {
@@ -454,10 +466,17 @@ impl Engine {
                 let Some(rt) = self.runtime.get_mut(&node) else {
                     return;
                 };
+                // Any value the filter reports can move its curve -- a
+                // parameter, the rate, the startup dump -- and the meters
+                // and the curve itself cannot.
+                if !matches!(name.as_str(), "in-level" | "out-level" | "gr" | "curve") {
+                    rt.curve_stale = true;
+                }
                 match name.as_str() {
                     "in-level" => rt.in_level = value.parse().unwrap_or(-240.0),
                     "out-level" => rt.out_level = value.parse().unwrap_or(-240.0),
                     "gr" => rt.gr = value.parse().unwrap_or(0.0),
+                    "curve" => rt.curve = Curve::parse(&value),
                     "latency" => {
                         rt.latency = value.parse().unwrap_or(0);
                         rt.reported.insert(name, value);
@@ -521,6 +540,30 @@ impl Engine {
         changed
     }
 
+    /// Ask every filter whose curve may have moved for it again.
+    ///
+    /// Called once per pass of the window's event loop, after the events
+    /// are in, so that the twenty echoes of a slider drag cost one curve per
+    /// pass rather than twenty. The filter is the authority on its response
+    /// as on its values: nothing here computes one.
+    pub fn request_curves(&mut self) {
+        for chain in &self.state.chains {
+            for stage in &chain.stages {
+                if !self.plugin(&stage.plugin).is_some_and(|d| d.curve) {
+                    continue;
+                }
+                let node = chain.node_name(stage);
+                let (Some(rt), Some(p)) = (self.runtime.get_mut(&node), self.procs.get_mut(&node))
+                else {
+                    continue;
+                };
+                if std::mem::take(&mut rt.curve_stale) {
+                    let _ = p.set("curve", "");
+                }
+            }
+        }
+    }
+
     /// Forget how often things have failed to start.
     ///
     /// Take in a new snapshot of the graph.
@@ -545,6 +588,35 @@ impl Engine {
         for (_, p) in self.procs.drain() {
             p.shutdown();
         }
+    }
+}
+
+/// A filter's response curve, as it reported it: the axes, and the points
+/// in drawing order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Curve {
+    /// Levels (input dB to output dB) rather than frequencies (Hz to dB).
+    pub level: bool,
+    pub points: Vec<(f64, f64)>,
+}
+
+impl Curve {
+    /// `freq 20:0.00,21:0.00,...` or `level -90:-90.00,...`.
+    pub fn parse(value: &str) -> Option<Curve> {
+        let (kind, pts) = value.split_once(' ')?;
+        let level = match kind {
+            "freq" => false,
+            "level" => true,
+            _ => return None,
+        };
+        let points = pts
+            .split(',')
+            .map(|p| {
+                let (x, y) = p.split_once(':')?;
+                Some((x.parse().ok()?, y.parse().ok()?))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        (!points.is_empty()).then_some(Curve { level, points })
     }
 }
 
@@ -1112,6 +1184,46 @@ mod round_trip {
         let json = serde_json::to_string(&e.state).unwrap();
         let back: AppState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, e.state, "the state did not survive JSON");
+
+        // The startup dump left the curve stale, so asking now gets one --
+        // and it is the one the same settings give offline, point for point,
+        // because both come from the same coefficients.
+        e.request_curves();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && e.runtime(&node).is_some_and(|r| r.curve.is_none()) {
+            while let Ok(ev) = rx.try_recv() {
+                e.on_proc_event(ev);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let rt = e.runtime(&node).cloned().unwrap();
+        let live = rt.curve.expect("pw_eq answered 'curve'");
+        assert!(!live.level && live.points.len() >= 100);
+        if rt.reported.get("rate").map(String::as_str) == Some("48000") {
+            let mut args: Vec<String> = Vec::new();
+            for (k, v) in &wanted {
+                args.push(format!("--{k}"));
+                args.push(v.clone());
+            }
+            let out = std::process::Command::new(&e.plugin("pw_eq").unwrap().path)
+                .args(&args)
+                .arg("--curve")
+                .output()
+                .unwrap();
+            let offline = String::from_utf8(out.stdout).unwrap();
+            let offline = Curve::parse(offline.trim().strip_prefix("curve ").unwrap()).unwrap();
+            assert_eq!(live, offline, "the live curve is not the offline one");
+        }
+        // Asked once, answered once: nothing is stale until something moves.
+        e.request_curves();
+        std::thread::sleep(Duration::from_millis(200));
+        while let Ok(ev) = rx.try_recv() {
+            assert!(
+                !matches!(&ev, ProcEvent::Param { name, .. } if name == "curve"),
+                "a curve was sent again unasked"
+            );
+            e.on_proc_event(ev);
+        }
 
         e.shutdown();
     }

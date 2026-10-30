@@ -376,6 +376,11 @@ impl App {
                 // what an automatic channel mapping resolves to.
                 app.apply();
             }
+            if full {
+                // Whatever just came in may have moved a filter's response;
+                // one request per filter per pass, however many lines it was.
+                app.engine.borrow_mut().request_curves();
+            }
             if full || status {
                 app.refresh();
             } else if meters {
@@ -771,12 +776,29 @@ impl App {
                     .collect::<Vec<_>>(),
             ));
 
+            let curves = Rc::new(VecModel::from(
+                chain.stages.iter().map(|s| curve_row(&e, chain, s)).collect::<Vec<_>>(),
+            ));
+
             win.set_stages(ModelRc::from(stages.clone()));
             win.set_levels(ModelRc::from(levels.clone()));
+            win.set_curves(ModelRc::from(curves.clone()));
             m.stages = Some(stages);
             m.levels = Some(levels);
+            m.curves = Some(curves);
             m.shape = shape;
         } else if let Some(stages) = m.stages.clone() {
+            // A curve moves only when the filter reports a new one, and is
+            // written only then: the plot is redrawn on a real change and
+            // left alone on every other refresh.
+            if let Some(curves) = m.curves.as_ref() {
+                for (i, s) in chain.stages.iter().enumerate() {
+                    let row = curve_row(&e, chain, s);
+                    if curves.row_data(i).as_ref() != Some(&row) {
+                        curves.set_row_data(i, row);
+                    }
+                }
+            }
             for (i, stage) in chain.stages.iter().enumerate() {
                 if let Some(desc) = e.plugin(&stage.plugin) {
                     let pm = &m.params[i];
@@ -894,6 +916,7 @@ struct Models {
     stages: Option<Rc<VecModel<StageRow>>>,
     params: Vec<Rc<VecModel<ParamRow>>>,
     levels: Option<Rc<VecModel<LevelRow>>>,
+    curves: Option<Rc<VecModel<CurveRow>>>,
     chains_key: Vec<String>,
     buses_key: Vec<String>,
     bus_kinds_key: Vec<String>,
@@ -937,6 +960,24 @@ fn level_row(in_db: f32, out_db: f32, gr: Option<f32>) -> LevelRow {
         has_gr: gr.is_some(),
         gr_db: gr.unwrap_or(0.0),
         gr_text: ui::gr_text(gr.unwrap_or(0.0)).into(),
+    }
+}
+
+/// A stage's response curve, laid out for the plot -- or an empty row, which
+/// draws nothing, for a filter that has none or has not reported one yet.
+fn curve_row(e: &Engine, chain: &Chain, stage: &Stage) -> CurveRow {
+    let Some(curve) = e.runtime(&chain.node_name(stage)).and_then(|r| r.curve.as_ref()) else {
+        return CurveRow::default();
+    };
+    let d = ui::curve_draw(curve);
+    CurveRow {
+        kind: if d.level { "level" } else { "freq" }.into(),
+        path: d.path.into(),
+        grid: d.grid.into(),
+        axis: d.axis.into(),
+        top: d.top.into(),
+        bottom: d.bottom.into(),
+        zero: d.zero,
     }
 }
 
@@ -2585,5 +2626,111 @@ mod window_tests {
             "rbj",
             "the dropdown must show what the model says"
         );
+    }
+}
+
+/// Not a test: a way to look at the window without a screen. Renders a chain
+/// of real filters, with the curves the real binaries report, through the
+/// real `refresh()` and Slint's software renderer, and writes the pixels to
+/// `$PWFX_RENDER_OUT` as `width height` and then raw RGBA. Run it alone --
+/// it installs its own platform, which can be done once per process:
+///
+///     PWFX_RENDER_OUT=/tmp/w.rgba cargo test render_the_window -- --ignored
+#[cfg(test)]
+mod render {
+    use super::*;
+    use slint::platform::software_renderer::{
+        MinimalSoftwareWindow, PremultipliedRgbaColor, RepaintBufferType,
+    };
+    use std::collections::BTreeMap;
+
+    struct Offscreen(Rc<MinimalSoftwareWindow>);
+    impl slint::platform::Platform for Offscreen {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn curve_of(bin: &str, args: &[&str]) -> String {
+        let out = std::process::Command::new(format!("../bin/{bin}"))
+            .args(args)
+            .arg("--curve")
+            .output()
+            .expect("the filters are built");
+        let line = String::from_utf8(out.stdout).unwrap();
+        line.trim().strip_prefix("curve ").unwrap().to_string()
+    }
+
+    #[test]
+    #[ignore]
+    fn render_the_window() {
+        let Ok(out) = std::env::var("PWFX_RENDER_OUT") else { return };
+        let (w, h) = (1180u32, 2400u32);
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(Offscreen(window.clone()))).unwrap();
+        window.set_size(slint::PhysicalSize::new(w, h));
+
+        let (plugins, _) = plugin::discover(&[std::path::PathBuf::from("../bin")]);
+        let stage = |id: &str, plugin: &str, params: &[(&str, &str)]| Stage {
+            id: id.into(),
+            plugin: plugin.into(),
+            bypass: false,
+            params: params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>(),
+        };
+        let mut st = state::AppState::default();
+        st.meters = false;
+        st.chains.push(Chain {
+            id: "voice".into(),
+            name: "Voice".into(),
+            enabled: true,
+            width: 2,
+            stages: vec![
+                stage("hpf", "pw_hpf", &[("cutoff", "80"), ("order", "2")]),
+                stage("eq", "pw_eq", &[("b3-freq", "2500"), ("b3-gain", "4"), ("b3-q", "1.2"),
+                                        ("ls-freq", "200"), ("ls-gain", "-3")]),
+                stage("comp", "pw_comp", &[("threshold", "-24"), ("ratio", "3"), ("knee", "6"),
+                                           ("makeup", "6")]),
+                stage("gate", "pw_gate", &[("threshold", "-45"), ("hysteresis", "6"), ("range", "30")]),
+            ],
+            input: None,
+            output: None,
+        });
+        let mut engine = Engine::new(plugins, st, Arc::new(|_| {}));
+        for (node, bin, args) in [
+            ("pwfx.voice.hpf", "pw_hpf", &["-f", "80", "-n", "2"][..]),
+            ("pwfx.voice.eq", "pw_eq", &["--b3-freq", "2500", "--b3-gain", "4", "--b3-q", "1.2",
+                                         "--ls-freq", "200", "--ls-gain", "-3"][..]),
+            ("pwfx.voice.comp", "pw_comp", &["-t", "-24", "-R", "3", "-w", "6", "-m", "6"][..]),
+            ("pwfx.voice.gate", "pw_gate", &["-t", "-45", "-T", "6", "-g", "30"][..]),
+        ] {
+            let rt = engine.runtime_mut(node);
+            rt.running = true;
+            rt.curve = engine::Curve::parse(&curve_of(bin, args));
+        }
+
+        let win = AppWindow::new().unwrap();
+        let app = App {
+            engine: Rc::new(RefCell::new(engine)),
+            view: Rc::new(RefCell::new(View::default())),
+            win: win.as_weak(),
+            pw: Rc::new(pwthread::start(|_| {})),
+            dirty: Rc::new(Cell::new(false)),
+            models: Rc::new(RefCell::new(Models::default())),
+            links: Rc::new(Cell::new((0, 0))),
+        };
+        app.refresh();
+        win.show().unwrap();
+
+        let mut buf = vec![PremultipliedRgbaColor::default(); (w * h) as usize];
+        window.draw_if_needed(|r| {
+            r.render(&mut buf, w as usize);
+        });
+        let mut bytes = format!("{w} {h}\n").into_bytes();
+        for p in &buf {
+            bytes.extend_from_slice(&[p.red, p.green, p.blue, 255]);
+        }
+        std::fs::write(out, bytes).unwrap();
     }
 }

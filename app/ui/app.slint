@@ -1,9 +1,9 @@
 import { Theme, Btn, Toggle, Meter } from "theme.slint";
 import { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow,
-          StageCard, MapDialog, NameField, SideRow, BusPane, Picker, BusAppRow } from "parts.slint";
+          StageCard, MapDialog, NameField, SideRow, BusPane, Picker, BusAppRow, CurveRow } from "parts.slint";
 import { LineEdit, ScrollView } from "std-widgets.slint";
 
-export { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow, BusAppRow }
+export { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow, BusAppRow, CurveRow }
 export { RefusedWindow } from "refused.slint";
 
 component Card inherits Rectangle {
@@ -104,6 +104,7 @@ export component AppWindow inherits Window {
     in property <int> width-index;
     in property <[StageRow]> stages;
     in property <[LevelRow]> levels;
+    in property <[CurveRow]> curves;
 
     in property <[string]> source-options;
     in property <int> source-index;
@@ -455,6 +456,7 @@ export component AppWindow inherits Window {
                             count: root.stages.length;
                             metering: root.metering;
                             level: root.levels[i];
+                            curve: root.curves[i];
                             set-bypass(v) => { root.set-bypass(i, v); }
                             remove => { root.remove-stage(i); }
                             move(d) => { root.move-stage(i, d); }
