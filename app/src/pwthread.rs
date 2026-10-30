@@ -5,9 +5,11 @@
 //! from it, and the nodes and links the app owns. The rest of the program
 //! talks to this thread in two directions and in terms of *names* only --
 //!
-//!   in   `PwCmd::SetNodes`, the buses that ought to exist, and
+//!   in   `PwCmd::SetNodes`, the buses that ought to exist,
 //!        `PwCmd::SetLinks`, the set of links that ought to exist, as node
-//!        and port names;
+//!        and port names, and
+//!        `PwCmd::SetRoutes`, which applications' streams ought to go to
+//!        which bus;
 //!   out  `PwEvent::Graph`, a snapshot of what is out there.
 //!
 //! Both are the same shape of command and are reconciled the same way: nodes
@@ -29,6 +31,15 @@
 //! and output are. Its contents are not global properties, so they only
 //! arrive through a listener; they go out in the snapshot alongside the
 //! nodes, and a change to them wakes the same tick a node appearing does.
+//!
+//! It is also how an application's stream is routed. Linking a stream by
+//! hand would mean tearing down the links the session manager made for it
+//! and fighting it every time it relinks; instead `target.object` is set on
+//! the stream in that metadata, which is what pavucontrol does, and the
+//! session manager moves it. The value is the target's `node.name`, not its
+//! serial: names survive the target being remade, and WirePlumber only
+//! *remembers* a target given as a serial, so one given by name is not kept
+//! for the application once this app has stopped asking for it.
 //!
 //! Nodes and links alike are held as proxies without `object.linger`, so if
 //! this process dies the server tears them down with it and the graph is left
@@ -93,6 +104,16 @@ pub struct NodeSpec {
     pub passive: bool,
 }
 
+/// Applications' streams the app wants on a node: every audio stream whose
+/// `application.name` is `app` and that records (or plays, per `record`) is
+/// sent to `target`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RouteSpec {
+    pub app: String,
+    pub record: bool,
+    pub target: String,
+}
+
 pub enum PwCmd {
     /// The complete set of nodes the app wants to exist. Anything it owns
     /// that is not in here is destroyed.
@@ -100,6 +121,9 @@ pub enum PwCmd {
     /// The complete set of links the app wants to exist. Anything it owns
     /// that is not in here is torn down.
     SetLinks(Vec<LinkSpec>),
+    /// The complete set of routes the app wants. A stream it moved that is
+    /// no longer covered by one is let go.
+    SetRoutes(Vec<RouteSpec>),
     Quit,
 }
 
@@ -116,6 +140,7 @@ pub enum PwEvent {
 struct Wanted {
     nodes: Vec<NodeSpec>,
     links: Vec<LinkSpec>,
+    routes: Vec<RouteSpec>,
 }
 
 type Emit = Rc<dyn Fn(PwEvent)>;
@@ -126,6 +151,7 @@ pub struct PwHandle {
     /// The sets last declared, so an unchanged one is not sent again.
     last_nodes: RefCell<Vec<NodeSpec>>,
     last_links: RefCell<Vec<LinkSpec>>,
+    last_routes: RefCell<Vec<RouteSpec>>,
 }
 
 impl PwHandle {
@@ -146,6 +172,14 @@ impl PwHandle {
         if *self.last_links.borrow() != links {
             *self.last_links.borrow_mut() = links.clone();
             let _ = self.tx.send(PwCmd::SetLinks(links));
+        }
+    }
+
+    /// Declare which applications' streams ought to go where.
+    pub fn declare_routes(&self, routes: Vec<RouteSpec>) {
+        if *self.last_routes.borrow() != routes {
+            *self.last_routes.borrow_mut() = routes.clone();
+            let _ = self.tx.send(PwCmd::SetRoutes(routes));
         }
     }
 }
@@ -172,6 +206,7 @@ pub fn start(on_event: impl Fn(PwEvent) + Send + 'static) -> PwHandle {
         join: Some(join),
         last_nodes: RefCell::new(Vec::new()),
         last_links: RefCell::new(Vec::new()),
+        last_routes: RefCell::new(Vec::new()),
     }
 }
 
@@ -182,6 +217,13 @@ struct NodeRec {
     name: String,
     description: String,
     media_class: String,
+    app: Option<String>,
+    /// `node.dont-move`: the stream asked not to be moved, and is not.
+    dont_move: bool,
+    /// `object.serial`, which unlike the id is never handed out twice. A
+    /// stream that ends and another that starts within one tick can share
+    /// an id, and only this tells them apart.
+    serial: u64,
 }
 
 struct PortRec {
@@ -227,6 +269,14 @@ struct State {
     metadata: Option<u32>,
     default_source: Option<String>,
     default_sink: Option<String>,
+    desired_routes: Vec<RouteSpec>,
+    /// `target.object` as the metadata has it now, per node id.
+    targets: HashMap<u32, String>,
+    /// The streams this app pointed somewhere, by id and serial, and where.
+    /// A stream is only pointed once per target: if the user then moves it
+    /// themselves, that stands, and the rule takes it back only if it
+    /// changes.
+    routed: HashMap<u32, (u64, String)>,
 }
 
 impl State {
@@ -257,6 +307,7 @@ impl State {
                     n.description.clone()
                 },
                 media_class: n.media_class.clone(),
+                app: n.app.clone(),
                 ports: by_node.remove(id).unwrap_or_default(),
             })
             .collect();
@@ -474,6 +525,7 @@ fn session(
     let st = Rc::new(RefCell::new(State {
         desired: std::mem::take(&mut wanted.links),
         desired_nodes: std::mem::take(&mut wanted.nodes),
+        desired_routes: std::mem::take(&mut wanted.routes),
         ..State::default()
     }));
     // Two flags, not one. The graph changing and what the app wants changing
@@ -484,12 +536,19 @@ fn session(
     let links_moved = Rc::new(Cell::new(false));
     let quit = Rc::new(Cell::new(false));
 
+    // The bound `default` metadata and its listener, which have to be kept
+    // alive for as long as the defaults are to keep arriving -- and which
+    // the routes are written through.
+    let metadata: Rc<RefCell<Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>>> =
+        Rc::new(RefCell::new(None));
+
     // A repeating tick rather than a one-shot armed from the callbacks: the
     // callbacks then only have to set a flag, which keeps them from having to
     // reach back into a timer that is created after them.
     let ticker = {
         let (st, core, emit) = (st.clone(), core.clone(), emit.clone());
         let (graph_moved, links_moved) = (graph_moved.clone(), links_moved.clone());
+        let metadata = metadata.clone();
         mainloop.loop_().add_timer(move |_| {
             let graph = graph_moved.replace(false);
             if !graph && !links_moved.replace(false) {
@@ -500,17 +559,17 @@ fn session(
             // has ports, and this is the pass that gives it them.
             reconcile_nodes(&mut st, &core, &emit);
             reconcile(&mut st, &core, &emit);
+            // Last: a stream can only be pointed at a bus once the bus is
+            // in the registry, and the node pass is what puts it there.
+            if let Some((meta, _)) = metadata.borrow().as_ref() {
+                reconcile_routes(&mut st, meta);
+            }
             if graph {
                 emit(PwEvent::Graph(st.snapshot()));
             }
         })
     };
     let _ = ticker.update_timer(Some(TICK), Some(TICK));
-
-    // The bound `default` metadata and its listener, which have to be kept
-    // alive for as long as the defaults are to keep arriving.
-    let metadata: Rc<RefCell<Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>>> =
-        Rc::new(RefCell::new(None));
 
     let _reg_listener = registry
         .add_listener_local()
@@ -596,6 +655,10 @@ fn session(
                 st.borrow_mut().desired_nodes = nodes;
                 links_moved.set(true);
             }
+            PwCmd::SetRoutes(routes) => {
+                st.borrow_mut().desired_routes = routes;
+                links_moved.set(true);
+            }
             PwCmd::Quit => {
                 quit.set(true);
                 mainloop.quit();
@@ -609,6 +672,25 @@ fn session(
     let mut st = st.borrow_mut();
     wanted.links = std::mem::take(&mut st.desired);
     wanted.nodes = std::mem::take(&mut st.desired_nodes);
+    wanted.routes = std::mem::take(&mut st.desired_routes);
+    // Hand back every stream this app pointed somewhere, on the same terms
+    // as a rule going away: only where the metadata still says what was
+    // written. Unlike a link, a metadata entry is not owned by this client
+    // and does not go when it does, so it has to be taken back while still
+    // connected -- and waited for, or the disconnect can overtake it.
+    if quit.get() {
+        if let Some((meta, _)) = metadata.borrow().as_ref() {
+            let State { nodes, targets, routed, .. } = &mut *st;
+            let mut wrote = false;
+            for (id, target) in plan_routes(nodes, &[], targets, routed) {
+                write_route(meta, id, target.as_deref());
+                wrote = true;
+            }
+            if wrote {
+                roundtrip(mainloop, core);
+            }
+        }
+    }
     // Tearing the proxies down explicitly keeps the server from having to
     // notice this client vanish while it is still connected. Links before
     // nodes, so nothing is carrying audio out of a bus as it goes.
@@ -622,6 +704,84 @@ fn session(
         return idle(mainloop, rx, wanted, RETRY);
     }
     (rx, true)
+}
+
+/// Work out which streams to point where, and which to let go of.
+///
+/// Returns `(node id, target)` pairs to write to the metadata, `None` meaning
+/// "delete the key". Pure, so it can be tested without a daemon; `routed` is
+/// updated to what will be true once they are written.
+///
+/// A stream is pointed at its route's target once -- when it appears, when
+/// its rule appears, or when the target does. After that it is left alone:
+/// a user who moves it somewhere else in pavucontrol has made a decision,
+/// and re-asserting the rule over it on every tick would be fighting them.
+/// Letting go is just as careful: the key is deleted only if it still says
+/// what this app wrote, so a stream someone has since moved stays moved.
+fn plan_routes(
+    nodes: &HashMap<u32, NodeRec>,
+    desired: &[RouteSpec],
+    targets: &HashMap<u32, String>,
+    routed: &mut HashMap<u32, (u64, String)>,
+) -> Vec<(u32, Option<String>)> {
+    let mut want: HashMap<u32, (u64, &str)> = HashMap::new();
+    for (id, n) in nodes {
+        let Some(app) = n.app.as_deref() else { continue };
+        let record = match n.media_class.as_str() {
+            "Stream/Output/Audio" => false,
+            "Stream/Input/Audio" => true,
+            _ => continue,
+        };
+        if n.dont_move {
+            continue;
+        }
+        let Some(r) = desired.iter().find(|r| r.app == app && r.record == record) else {
+            continue;
+        };
+        // A target that is not there yet -- a bus still being made, or
+        // switched off -- leaves the stream where the session manager put it
+        // rather than pointing it at nothing. Its arrival is a registry
+        // change, which is the next pass, which points it.
+        if nodes.values().any(|t| t.name == r.target) {
+            want.insert(*id, (n.serial, &r.target));
+        }
+    }
+
+    let mut acts = Vec::new();
+    routed.retain(|id, (serial, target)| {
+        if want.get(id) == Some(&(*serial, target.as_str())) {
+            return true;
+        }
+        // A stream that has gone takes its metadata with it, and so does
+        // one whose id now belongs to a new stream.
+        let same = nodes.get(id).is_some_and(|n| n.serial == *serial);
+        if same && targets.get(id) == Some(target) {
+            acts.push((*id, None));
+        }
+        false
+    });
+    for (id, (serial, target)) in want {
+        if !routed.contains_key(&id) {
+            routed.insert(id, (serial, target.to_string()));
+            acts.push((id, Some(target.to_string())));
+        }
+    }
+    acts.sort();
+    acts
+}
+
+fn write_route(meta: &pw::metadata::Metadata, id: u32, target: Option<&str>) {
+    match target {
+        Some(t) => meta.set_property(id, "target.object", Some("Spa:String"), Some(t)),
+        None => meta.set_property(id, "target.object", None, None),
+    }
+}
+
+fn reconcile_routes(st: &mut State, meta: &pw::metadata::Metadata) {
+    let State { nodes, desired_routes, targets, routed, .. } = st;
+    for (id, target) in plan_routes(nodes, desired_routes, targets, routed) {
+        write_route(meta, id, target.as_deref());
+    }
 }
 
 /// Bind the `default` metadata and follow the two keys this app cares about.
@@ -638,10 +798,21 @@ fn watch_defaults(
         .property({
             let (st, graph_moved) = (st.clone(), graph_moved.clone());
             move |subject, key, _type, value| {
+                let mut st = st.borrow_mut();
                 if subject != pw::core::PW_ID_CORE {
+                    // Where each stream is pointed, which the route
+                    // reconcile compares against before letting one go.
+                    match (key, value) {
+                        (Some("target.object"), Some(v)) => {
+                            st.targets.insert(subject, v.to_string());
+                        }
+                        (Some("target.object"), None) | (None, _) => {
+                            st.targets.remove(&subject);
+                        }
+                        _ => {}
+                    }
                     return 0;
                 }
-                let mut st = st.borrow_mut();
                 let new = value.and_then(default_name);
                 let slot = match key {
                     Some("default.audio.source") => &mut st.default_source,
@@ -689,6 +860,9 @@ fn take_global(
                         .or_else(|| prop(p, "node.nick"))
                         .unwrap_or_default(),
                     media_class: prop(p, "media.class").unwrap_or_default(),
+                    app: prop(p, "application.name"),
+                    dont_move: prop(p, "node.dont-move").as_deref() == Some("true"),
+                    serial: prop(p, "object.serial").and_then(|s| s.parse().ok()).unwrap_or(0),
                 },
             );
             true
@@ -744,6 +918,35 @@ fn take_global(
     }
 }
 
+/// Wait until the server has seen everything sent so far, or a second has
+/// passed: a sync is answered only after every message before it.
+fn roundtrip(mainloop: &pw::main_loop::MainLoopRc, core: &pw::core::CoreRc) {
+    let Ok(pending) = core.sync(0) else { return };
+    let _done = core
+        .add_listener_local()
+        .done({
+            let weak = mainloop.downgrade();
+            move |id, seq| {
+                if id == pw::core::PW_ID_CORE && seq == pending {
+                    if let Some(m) = weak.upgrade() {
+                        m.quit();
+                    }
+                }
+            }
+        })
+        .register();
+    let timeout = mainloop.loop_().add_timer({
+        let weak = mainloop.downgrade();
+        move |_| {
+            if let Some(m) = weak.upgrade() {
+                m.quit();
+            }
+        }
+    });
+    let _ = timeout.update_timer(Some(Duration::from_secs(1)), None);
+    mainloop.run();
+}
+
 /// Run the loop for `delay` while still accepting commands, so waiting to
 /// reconnect does not make the GUI feel wedged.
 fn idle(
@@ -754,7 +957,8 @@ fn idle(
 ) -> (pw::channel::Receiver<PwCmd>, bool) {
     let quit = Rc::new(Cell::new(false));
     let pending: Rc<RefCell<Wanted>> = Rc::new(RefCell::new(Wanted::default()));
-    let moved = Rc::new(Cell::new((false, false)));
+    // Which of nodes, links and routes arrived.
+    let moved = Rc::new(Cell::new((false, false, false)));
 
     let timer = mainloop.loop_().add_timer({
         let weak = mainloop.downgrade();
@@ -772,11 +976,18 @@ fn idle(
         move |cmd| match cmd {
             PwCmd::SetLinks(links) => {
                 pending.borrow_mut().links = links;
-                moved.set((moved.get().0, true));
+                let (n, _, r) = moved.get();
+                moved.set((n, true, r));
             }
             PwCmd::SetNodes(nodes) => {
                 pending.borrow_mut().nodes = nodes;
-                moved.set((true, moved.get().1));
+                let (_, l, r) = moved.get();
+                moved.set((true, l, r));
+            }
+            PwCmd::SetRoutes(routes) => {
+                pending.borrow_mut().routes = routes;
+                let (n, l, _) = moved.get();
+                moved.set((n, l, true));
             }
             PwCmd::Quit => {
                 quit.set(true);
@@ -789,13 +1000,16 @@ fn idle(
 
     // Only what actually arrived replaces what is held: an app that edited a
     // chain while the daemon was away must not lose its buses with it.
-    let (nodes_moved, links_moved) = moved.get();
+    let (nodes_moved, links_moved, routes_moved) = moved.get();
     let mut pending = pending.borrow_mut();
     if nodes_moved {
         wanted.nodes = std::mem::take(&mut pending.nodes);
     }
     if links_moved {
         wanted.links = std::mem::take(&mut pending.links);
+    }
+    if routes_moved {
+        wanted.routes = std::mem::take(&mut pending.routes);
     }
     (rx, quit.get())
 }
@@ -816,6 +1030,113 @@ mod tests {
         );
         assert_eq!(default_name("not json"), None);
         assert_eq!(default_name(r#"{"other":1}"#), None);
+    }
+
+    fn rec(name: &str, class: &str, app: Option<&str>, serial: u64) -> NodeRec {
+        NodeRec {
+            name: name.into(),
+            description: String::new(),
+            media_class: class.into(),
+            app: app.map(Into::into),
+            dont_move: false,
+            serial,
+        }
+    }
+
+    /// A sink bus, a source bus, and Firefox playing and recording.
+    fn graph() -> HashMap<u32, NodeRec> {
+        HashMap::from([
+            (10, rec("pwfx.bus.music", "Audio/Sink", None, 100)),
+            (11, rec("pwfx.bus.mic", "Audio/Source/Virtual", None, 101)),
+            (20, rec("firefox-out", "Stream/Output/Audio", Some("Firefox"), 200)),
+            (21, rec("firefox-in", "Stream/Input/Audio", Some("Firefox"), 201)),
+            (22, rec("mpv", "Stream/Output/Audio", Some("mpv"), 202)),
+        ])
+    }
+
+    fn route(app: &str, record: bool, target: &str) -> RouteSpec {
+        RouteSpec { app: app.into(), record, target: target.into() }
+    }
+
+    fn set(id: u32, t: &str) -> (u32, Option<String>) {
+        (id, Some(t.into()))
+    }
+
+    #[test]
+    fn a_route_points_only_the_streams_going_its_way() {
+        let nodes = graph();
+        let mut routed = HashMap::new();
+        let routes = [route("Firefox", false, "pwfx.bus.music")];
+        // Firefox's playback, not its recording, and not mpv.
+        assert_eq!(plan_routes(&nodes, &routes, &HashMap::new(), &mut routed),
+                   [set(20, "pwfx.bus.music")]);
+        // Once: the next pass has nothing to do.
+        assert!(plan_routes(&nodes, &routes, &HashMap::new(), &mut routed).is_empty());
+
+        let mut routed = HashMap::new();
+        let routes = [route("Firefox", true, "pwfx.bus.mic")];
+        assert_eq!(plan_routes(&nodes, &routes, &HashMap::new(), &mut routed),
+                   [set(21, "pwfx.bus.mic")]);
+    }
+
+    #[test]
+    fn a_stream_moved_by_hand_stays_moved() {
+        let nodes = graph();
+        let routes = [route("Firefox", false, "pwfx.bus.music")];
+        let mut routed = HashMap::new();
+        plan_routes(&nodes, &routes, &HashMap::new(), &mut routed);
+
+        // The user sent it to the speakers in pavucontrol.
+        let targets = HashMap::from([(20, "speakers".to_string())]);
+        assert!(plan_routes(&nodes, &routes, &targets, &mut routed).is_empty(),
+                "the rule is not re-asserted over them");
+        // And dropping the rule does not undo their choice either.
+        assert!(plan_routes(&nodes, &[], &targets, &mut routed).is_empty());
+        assert!(routed.is_empty());
+    }
+
+    #[test]
+    fn letting_go_deletes_only_what_this_app_wrote() {
+        let nodes = graph();
+        let routes = [route("Firefox", false, "pwfx.bus.music")];
+        let mut routed = HashMap::new();
+        plan_routes(&nodes, &routes, &HashMap::new(), &mut routed);
+        let targets = HashMap::from([(20, "pwfx.bus.music".to_string())]);
+        assert_eq!(plan_routes(&nodes, &[], &targets, &mut routed), [(20, None)]);
+    }
+
+    #[test]
+    fn a_target_that_is_not_there_yet_is_waited_for() {
+        let mut nodes = graph();
+        nodes.remove(&10);
+        let routes = [route("Firefox", false, "pwfx.bus.music")];
+        let mut routed = HashMap::new();
+        assert!(plan_routes(&nodes, &routes, &HashMap::new(), &mut routed).is_empty());
+        nodes = graph();
+        assert_eq!(plan_routes(&nodes, &routes, &HashMap::new(), &mut routed),
+                   [set(20, "pwfx.bus.music")]);
+    }
+
+    #[test]
+    fn a_new_stream_on_a_reused_id_is_a_new_stream() {
+        // What the live test caught: Firefox's stream ends and a new one
+        // starts under the same id within one tick. Keyed by id alone it
+        // looked routed already and was left on the default.
+        let mut nodes = graph();
+        let routes = [route("Firefox", false, "pwfx.bus.music")];
+        let mut routed = HashMap::new();
+        plan_routes(&nodes, &routes, &HashMap::new(), &mut routed);
+        nodes.get_mut(&20).unwrap().serial = 300;
+        assert_eq!(plan_routes(&nodes, &routes, &HashMap::new(), &mut routed),
+                   [set(20, "pwfx.bus.music")]);
+    }
+
+    #[test]
+    fn a_stream_that_asks_not_to_be_moved_is_not() {
+        let mut nodes = graph();
+        nodes.get_mut(&20).unwrap().dont_move = true;
+        let routes = [route("Firefox", false, "pwfx.bus.music")];
+        assert!(plan_routes(&nodes, &routes, &HashMap::new(), &mut HashMap::new()).is_empty());
     }
 
     /// Against the real daemon: the defaults arrive in the snapshot, and they

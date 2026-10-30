@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use crate::graph::{self, Dir, Graph};
 use crate::plugin::PluginDesc;
 use crate::process::{EventSink, FilterProc, ProcEvent};
-use crate::pwthread::{LinkSpec, NodeSpec};
-use crate::state::{AppState, Bus, Chain};
+use crate::pwthread::{LinkSpec, NodeSpec, RouteSpec};
+use crate::state::{AppState, Bus, BusKind, Chain};
 
 /// How often the meters report, in milliseconds, when they are on.
 const METER_MS: u32 = 80;
@@ -140,6 +140,26 @@ impl Engine {
     /// same edit-and-compare as everything else here.
     fn desired_nodes(&self) -> Vec<NodeSpec> {
         self.state.buses.iter().filter(|b| b.enabled).map(node_spec).collect()
+    }
+
+    /// Which applications' streams the state sends to which bus.
+    ///
+    /// A switched-off bus routes nothing: its node is not there to be sent
+    /// to, and leaving its applications pointed at a name that resolves to
+    /// nothing would only make the session manager fall back for them.
+    pub fn desired_routes(&self) -> Vec<RouteSpec> {
+        self.state
+            .buses
+            .iter()
+            .filter(|b| b.enabled)
+            .flat_map(|b| {
+                b.apps.iter().map(move |app| RouteSpec {
+                    app: app.clone(),
+                    record: b.kind == BusKind::Source,
+                    target: b.node_name(),
+                })
+            })
+            .collect()
     }
 
     /// The chains wired to a bus, and which way round -- `true` for a chain
@@ -603,6 +623,7 @@ mod tests {
             name: name.into(),
             description: name.into(),
             media_class: "Audio/Source".into(),
+            app: None,
             ports: channels
                 .iter()
                 .enumerate()
@@ -844,6 +865,7 @@ mod tests {
             enabled: true,
             width,
             kind,
+            apps: Vec::new(),
         }
     }
 
@@ -914,6 +936,45 @@ mod tests {
         let uses = e.bus_uses(&e.state.buses[0]);
         assert_eq!(uses.len(), 2);
         assert!(uses.iter().all(|(_, into)| *into));
+    }
+
+    #[test]
+    fn a_bus_routes_its_applications_the_way_its_kind_points() {
+        let mut e = engine(vec![], vec![]);
+        let mut music = bus("music", BusKind::Sink, 2);
+        music.apps = vec!["Firefox".into(), "mpv".into()];
+        let mut mic = bus("mic", BusKind::Source, 1);
+        mic.apps = vec!["Zoom".into()];
+        let mut off = bus("off", BusKind::Sink, 2);
+        off.apps = vec!["Spotify".into()];
+        off.enabled = false;
+        e.state.buses = vec![music, mic, off];
+
+        let got: Vec<(String, bool, String)> = e
+            .desired_routes()
+            .into_iter()
+            .map(|r| (r.app, r.record, r.target))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("Firefox".into(), false, "pwfx.bus.music".into()),
+                ("mpv".into(), false, "pwfx.bus.music".into()),
+                // A source bus is recorded from.
+                ("Zoom".into(), true, "pwfx.bus.mic".into()),
+                // A switched-off bus routes nothing.
+            ]
+        );
+
+        // Turning a bus round turns its applications round with it.
+        e.state.buses[0].kind = BusKind::Source;
+        assert!(e.desired_routes().iter().all(|r| r.record));
+
+        // And none of it touches the node: the apps are not part of what
+        // the daemon is asked to make.
+        let before = node_spec(&e.state.buses[1]);
+        e.state.buses[1].apps.clear();
+        assert_eq!(node_spec(&e.state.buses[1]), before);
     }
 
     #[test]

@@ -204,6 +204,22 @@ the same engine and PipeWire thread from a plain loop; `boot`, `apply` and
 graph change or every second has to go through them, not into a Slint timer.
 Only one pwfx runs at a time (`state::lock_instance`), window or not.
 
+**Applications are routed through metadata, not links.** A bus's `apps` become
+`RouteSpec`s, and `pwthread.rs` sets `target.object` on each matching stream in
+the `default` metadata, so the session manager moves it rather than being
+fought. Three rules in `plan_routes`, each covered by a test there:
+
+- The value is the target's `node.name`, never its serial. WirePlumber only
+  remembers a target given as a serial, so by name nothing outlives pwfx.
+- A stream is pointed once per target, and let go only if the metadata still
+  says what pwfx wrote -- a user who moves it in pavucontrol is not overruled.
+- Streams are known by `object.serial` as well as id. PipeWire hands a new
+  stream the id of one that just ended, often within one tick.
+
+Metadata is not owned by the client that wrote it, so pwfx deletes its
+entries before disconnecting and waits for a roundtrip; a crash leaves them,
+and they then name a node that is gone, which WirePlumber falls back from.
+
 **Destroy a PipeWire object by dropping its proxy.** The drop calls
 `pw_proxy_destroy`, which already asks the server to destroy it;
 `Core::destroy_object` on top asks twice, and the "unknown resource" error the

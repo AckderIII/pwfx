@@ -91,6 +91,10 @@ struct View {
     /// Port names in the matrix's row order.
     map_ports: Vec<String>,
     presets: Vec<String>,
+    /// The application picked in the bus pane's "add" list, by name, and
+    /// the names behind that list's entries. Entry 0 is the prompt.
+    bus_app_pick: Option<String>,
+    bus_app_names: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -309,6 +313,7 @@ fn apply(engine: &mut Engine, pw: &pwthread::PwHandle) {
     let (nodes, links) = engine.apply();
     pw.declare_nodes(nodes);
     pw.declare_links(links);
+    pw.declare_routes(engine.desired_routes());
 }
 
 /// Leave, in order: the links before the filters, so the graph never sees a
@@ -316,6 +321,9 @@ fn apply(engine: &mut Engine, pw: &pwthread::PwHandle) {
 /// last, for the same reason one level up. They would all go anyway when the
 /// PipeWire thread drops its proxies, so this is only about the order.
 fn stop(engine: &mut Engine, pw: &pwthread::PwHandle) {
+    // Applications back where the session manager would put them, before
+    // the buses they were sent to go.
+    pw.declare_routes(Vec::new());
     pw.declare_links(Vec::new());
     engine.shutdown();
     pw.declare_nodes(Vec::new());
@@ -570,6 +578,58 @@ impl App {
                 win.set_bus_uses(ModelRc::new(VecModel::from(uses)));
                 m.bus_uses_key = key;
             }
+
+            // --- applications routed here ---
+            let record = b.kind == BusKind::Source;
+            let verb = if record { "recording" } else { "playing" };
+            win.set_bus_apps_heading(
+                if record {
+                    "APPLICATIONS RECORDING FROM THIS BUS"
+                } else {
+                    "APPLICATIONS PLAYING INTO THIS BUS"
+                }
+                .into(),
+            );
+            let rows: Vec<BusAppRow> = b
+                .apps
+                .iter()
+                .map(|app| {
+                    let n = e.graph.streams_of(app, record);
+                    BusAppRow {
+                        name: app.as_str().into(),
+                        detail: if !b.enabled {
+                            "the bus is off — left where it is".into()
+                        } else if n > 0 {
+                            format!("{verb} · {n} stream{}", plural(n)).into()
+                        } else {
+                            "not running — sent here when it starts".into()
+                        },
+                        running: b.enabled && n > 0,
+                    }
+                })
+                .collect();
+            let key: Vec<String> = rows
+                .iter()
+                .map(|r| format!("{}|{}|{}", r.name, r.detail, r.running))
+                .collect();
+            if m.bus_apps_key != key {
+                win.set_bus_apps(ModelRc::new(VecModel::from(rows)));
+                m.bus_apps_key = key;
+            }
+            win.set_bus_apps_hint(bus_apps_hint(b).into());
+
+            let (options, names) = bus_app_choices(&e, b);
+            let index = v
+                .bus_app_pick
+                .as_ref()
+                .and_then(|p| names.iter().position(|n| n == p))
+                .unwrap_or(0);
+            if m.bus_app_key != options {
+                win.set_bus_app_options(strings(&options));
+                m.bus_app_key = options;
+            }
+            win.set_bus_app_index(index as i32);
+            v.bus_app_names = names;
         }
 
         // --- plugins available to add ---
@@ -839,6 +899,8 @@ struct Models {
     bus_kinds_key: Vec<String>,
     bus_widths_key: Vec<String>,
     bus_uses_key: Vec<String>,
+    bus_apps_key: Vec<String>,
+    bus_app_key: Vec<String>,
     widths_key: Vec<String>,
     source_key: Vec<String>,
     sink_key: Vec<String>,
@@ -1003,6 +1065,60 @@ fn bus_detail(b: &Bus) -> String {
 
 /// Whether the bus is actually there, in the terms that tell the user what to
 /// do about it if it is not.
+/// What the bus pane says under its list of applications.
+fn bus_apps_hint(b: &Bus) -> &'static str {
+    match (b.kind == BusKind::Source, b.apps.is_empty()) {
+        (false, true) => {
+            "Send an application's sound here instead of to its own output: pick it \
+             below while it is playing. It goes back when it is removed here or when \
+             pwfx stops."
+        }
+        (true, true) => {
+            "Have an application record from this bus instead of its own microphone: \
+             pick it below while it is recording. It goes back when it is removed here \
+             or when pwfx stops."
+        }
+        _ => {
+            "Sent here each time it starts. Moving it somewhere else yourself is left \
+             alone until it next starts."
+        }
+    }
+}
+
+/// The "add an application" list for a bus: the ones going its way right
+/// now that it does not already have, and the names behind the entries.
+/// One that another bus of the same kind has is offered with a note,
+/// because adding it here moves it.
+fn bus_app_choices(e: &Engine, b: &Bus) -> (Vec<String>, Vec<String>) {
+    let record = b.kind == BusKind::Source;
+    let verb = if record { "recording" } else { "playing" };
+    let running: Vec<String> = e
+        .graph
+        .apps(record)
+        .into_iter()
+        .filter(|a| !b.apps.contains(a))
+        .collect();
+    let mut options = vec![if running.is_empty() {
+        format!("— no application is {verb} right now —")
+    } else {
+        format!("— add an application that is {verb} —")
+    }];
+    let mut names = vec![String::new()];
+    for app in running {
+        let elsewhere = e
+            .state
+            .buses
+            .iter()
+            .find(|o| o.id != b.id && o.kind == b.kind && o.apps.contains(&app));
+        options.push(match elsewhere {
+            Some(o) => format!("{app}  ·  now on {}", o.description()),
+            None => app.clone(),
+        });
+        names.push(app);
+    }
+    (options, names)
+}
+
 fn bus_status(e: &Engine, b: &Bus) -> String {
     if !b.enabled {
         return "off — no other application can see it".into();
@@ -1246,6 +1362,48 @@ impl App {
                 v.selected_bus = i.max(0) as usize;
                 v.focus = Focus::Bus;
                 v.map = None;
+                v.bus_app_pick = None;
+            });
+        });
+
+        on!(on_pick_bus_app, |app, i| {
+            app.look(move |v| {
+                v.bus_app_pick = v.bus_app_names.get(i.max(0) as usize).filter(|n| !n.is_empty()).cloned();
+            });
+        });
+        on!(on_add_bus_app, |app| {
+            app.edit(|e, v| {
+                let Some(name) = v.bus_app_pick.take() else { return };
+                let Some(kind) = e.state.buses.get(v.selected_bus).map(|b| b.kind) else {
+                    return;
+                };
+                // One bus per application and direction, so the state can
+                // never send one stream two ways: adding it here takes it
+                // off any other bus of the same kind.
+                let mut moved_from = Vec::new();
+                for (i, b) in e.state.buses.iter_mut().enumerate() {
+                    if i != v.selected_bus && b.kind == kind && b.apps.contains(&name) {
+                        b.apps.retain(|a| *a != name);
+                        moved_from.push(b.description());
+                    }
+                }
+                let b = &mut e.state.buses[v.selected_bus];
+                if !b.apps.contains(&name) {
+                    b.apps.push(name.clone());
+                }
+                let here = b.description();
+                for from in moved_from {
+                    e.note(format!("{name} moved from {from} to {here}"), false);
+                }
+            });
+        });
+        on!(on_remove_bus_app, |app, i| {
+            app.edit(move |e, v| {
+                if let Some(b) = e.state.buses.get_mut(v.selected_bus) {
+                    if (i as usize) < b.apps.len() {
+                        b.apps.remove(i as usize);
+                    }
+                }
             });
         });
 
@@ -1259,6 +1417,7 @@ impl App {
                     enabled: true,
                     width: 2,
                     kind: BusKind::Source,
+                    apps: Vec::new(),
                 });
                 v.selected_bus = e.state.buses.len() - 1;
                 v.focus = Focus::Bus;
@@ -1730,6 +1889,7 @@ mod picker_tests {
             name: name.into(),
             description: name.into(),
             media_class: class.into(),
+            app: None,
             ports: vec![Port {
                 id: 2,
                 name: "p".into(),
@@ -2103,12 +2263,11 @@ mod window_tests {
         win.hide().unwrap();
     }
 
-    /// The bug this was written for: a `gr` line counted as a reason to
-    /// refresh everything, and the dropdowns were handed a new list on every
-    /// refresh, so with a compressor running a dozen times a second an open
-    /// dropdown was rebuilt under the pointer -- it flickered, and no entry
-    /// could be picked. Driven through the real `App::refresh`, which is
-    /// where it was.
+    /// The bug this was written for: the bus pane handed its dropdown a new
+    /// list on every refresh, and a `gr` line counted as a reason to refresh
+    /// everything, so with a compressor running the application list was
+    /// replaced a dozen times a second -- it flickered, and no entry could be
+    /// picked. Driven through the real `App::refresh`, which is where it was.
     async fn a_refresh_leaves_lists_that_did_not_change_alone() {
         assert!(is_meter_reading(&ProcEvent::Param {
             node: "pwfx.voice.comp".into(),
@@ -2123,6 +2282,7 @@ mod window_tests {
             enabled: true,
             width: 2,
             kind: BusKind::Sink,
+            apps: Vec::new(),
         });
         st.chains.push(Chain {
             id: "voice".into(),
@@ -2131,13 +2291,22 @@ mod window_tests {
             width: 2,
             stages: Vec::new(),
             input: None,
-            output: Some(Endpoint {
-                node: "pwfx.bus.music".into(),
-                label: "Music".into(),
-                mapping: Mapping::Auto,
-            }),
+            output: None,
         });
-        let engine = Engine::new(Vec::new(), st, Arc::new(|_| {}));
+        let mut engine = Engine::new(Vec::new(), st, Arc::new(|_| {}));
+        let stream = |name: &str, app: &str| graph::Node {
+            id: 1,
+            name: name.into(),
+            description: name.into(),
+            media_class: "Stream/Output/Audio".into(),
+            app: Some(app.into()),
+            ports: Vec::new(),
+        };
+        engine.graph = graph::Graph {
+            nodes: vec![stream("ff", "Firefox"), stream("mpv", "mpv")],
+            connected: true,
+            ..Default::default()
+        };
 
         let win = AppWindow::new().unwrap();
         let app = App {
@@ -2154,17 +2323,20 @@ mod window_tests {
         };
 
         app.refresh();
-        let (uses, widths) = (win.get_bus_uses(), win.get_bus_width_options());
-        assert_eq!(uses.row_count(), 1);
+        let options = win.get_bus_app_options();
+        assert_eq!(options.row_count(), 3, "the prompt, Firefox and mpv");
+        let (apps, uses, widths) = (win.get_bus_apps(), win.get_bus_uses(), win.get_bus_width_options());
         app.refresh();
+        assert!(win.get_bus_app_options() == options, "the application list was replaced");
+        assert!(win.get_bus_apps() == apps, "the application rows were replaced");
         assert!(win.get_bus_uses() == uses, "the chain rows were replaced");
         assert!(win.get_bus_width_options() == widths, "the width list was replaced");
 
         // A real change still gets through.
-        app.engine.borrow_mut().state.chains[0].output = None;
+        app.engine.borrow_mut().graph.nodes.pop();
         app.refresh();
-        assert!(win.get_bus_uses() != uses);
-        assert_eq!(win.get_bus_uses().row_count(), 0);
+        assert!(win.get_bus_app_options() != options);
+        assert_eq!(win.get_bus_app_options().row_count(), 2);
 
         // And the chain view's width list, which had the same fault.
         app.view.borrow_mut().focus = Focus::Chain;
@@ -2328,6 +2500,61 @@ mod window_tests {
             ["Studio Mic".to_string()],
             "leaving the bus name field must commit what was typed in it"
         );
+        // --- the applications card ---
+        win.window()
+            .dispatch_event(slint::platform::WindowEvent::WindowActiveChanged(true));
+        win.set_bus_apps_heading("APPLICATIONS RECORDING FROM THIS BUS".into());
+        win.set_bus_apps(ModelRc::new(VecModel::from(vec![BusAppRow {
+            name: "Zoom".into(),
+            detail: "recording · 1 stream".into(),
+            running: true,
+        }])));
+        win.set_bus_app_options(strings(&[
+            "— add an application that is recording —".into(),
+            "OBS".into(),
+        ]));
+        win.set_bus_app_index(0);
+        let calls: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        win.on_add_bus_app({
+            let calls = calls.clone();
+            move || calls.borrow_mut().push("add".into())
+        });
+        win.on_remove_bus_app({
+            let calls = calls.clone();
+            move |i| calls.borrow_mut().push(format!("remove {i}"))
+        });
+        settle(&win).await;
+
+        let button = |text: &str| {
+            testing::ElementHandle::find_by_element_id(&win, "Btn::label")
+                .filter(|e| e.accessible_label().as_deref() == Some(text))
+                .last()
+                .unwrap_or_else(|| panic!("no {text} button"))
+        };
+        // Nothing picked: Add does nothing rather than adding the prompt.
+        button("Add").single_click(PointerEventButton::Left).await;
+        assert!(calls.borrow().is_empty(), "{:?}", calls.borrow());
+        win.set_bus_app_index(1);
+        button("Add").single_click(PointerEventButton::Left).await;
+        button("\u{2715}").single_click(PointerEventButton::Left).await;
+        assert_eq!(*calls.borrow(), ["add", "remove 0"]);
+
+        // The picker stops short of the button beside it, the same rule the
+        // chain view is measured against.
+        let picker = testing::ElementQuery::from_root(&win)
+            .match_inherits("ComboBox")
+            .find_all()
+            .into_iter()
+            .max_by(|a, b| a.absolute_position().y.total_cmp(&b.absolute_position().y))
+            .expect("the applications card has its picker");
+        let add = button("Add");
+        let picker_right = picker.absolute_position().x + picker.size().width;
+        assert!(
+            picker_right <= add.absolute_position().x,
+            "the app picker ({picker_right}) runs into Add ({})",
+            add.absolute_position().x
+        );
+        win.hide().unwrap();
     }
 
     /// Same again for the one enum the filters have, `pw_eq`'s bell design.

@@ -71,6 +71,13 @@ export struct BusUseRow {
     direction: string,
 }
 
+/// An application routed to a bus, and what it is doing right now.
+export struct BusAppRow {
+    name: string,
+    detail: string,
+    running: bool,
+}
+
 export struct MapRow {
     port: string,
     channel: string,
@@ -555,8 +562,16 @@ export component BusPane inherits VerticalLayout {
     in property <string> status;
     in property <bool> live;
     in property <[BusUseRow]> uses;
+    in property <string> apps-heading;
+    in property <string> apps-hint;
+    in property <[BusAppRow]> apps;
+    in property <[string]> app-options;
+    in property <int> app-index;
 
     callback rename(string);
+    callback pick-app(int);
+    callback add-app();
+    callback remove-app(int);
     callback set-enabled(bool);
     callback set-kind(int);
     callback set-width(int);
@@ -712,6 +727,79 @@ export component BusPane inherits VerticalLayout {
                 font-size: Theme.fs-small;
                 color: Theme.text-faint;
                 wrap: word-wrap;
+            }
+        }
+    }
+
+    // Applications sent here. Which way they go -- playing into it or
+    // recording from it -- is the bus's kind, so the heading says which.
+    Rectangle {
+        background: Theme.card;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.line;
+        VerticalLayout {
+            padding: Theme.pad;
+            spacing: 6px;
+            Text {
+                text: root.apps-heading;
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                letter-spacing: 0.6px;
+            }
+            for a[i] in root.apps : HorizontalLayout {
+                spacing: Theme.gap;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    y: 9px;
+                    border-radius: 4px;
+                    background: a.running ? Theme.good : Theme.text-faint;
+                }
+                Text {
+                    text: a.name;
+                    font-size: Theme.fs;
+                    color: Theme.text;
+                    width: 192px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: a.detail;
+                    font-size: Theme.fs-small;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Btn {
+                    text: "✕";
+                    danger: true;
+                    clicked => { root.remove-app(i); }
+                }
+            }
+            Text {
+                text: root.apps-hint;
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: Theme.gap;
+                Picker {
+                    horizontal-stretch: 1;
+                    options: root.app-options;
+                    index: root.app-index;
+                    picked(i) => { root.pick-app(i); }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Btn {
+                        text: "Add";
+                        primary: true;
+                        enabled: root.app-index > 0;
+                        clicked => { if root.app-index > 0 { root.add-app(); } }
+                    }
+                }
             }
         }
     }

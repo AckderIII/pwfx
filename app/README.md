@@ -52,6 +52,16 @@ See [Running without the window](#running-without-the-window).
   direction — PipeWire sums what arrives — so a bus is where several chains
   become one thing the rest of the system can select. Buses go when the app
   does; nothing is left behind in the graph.
+- **Applications on a bus.** A bus can name the applications that go to it:
+  their sound into a sink bus, or their recording out of a source bus --
+  the bus's kind decides which, since that is the only way the session
+  manager will link a stream to it. Pick an application while it is
+  running and every stream it opens is sent there, now and each time it
+  starts. It goes back to its usual device when it is removed from the
+  bus, when the bus is switched off, or when pwfx stops; and moving one
+  somewhere else yourself, in pavucontrol say, is left alone until it next
+  starts. One application goes to one bus of each kind, so adding it to a
+  second moves it.
 - **Channels.** A chain is mono, stereo or up to 64 channels wide. Matching
   the world to it is automatic: same-named channels line up (so FL/FR find
   FL/FR whatever order the device declares them in), and anything else falls
@@ -132,6 +142,7 @@ just the next comparison coming out differently:
 | the daemon restarts | the PipeWire thread reconnects and replays the wanted links |
 | a preset is loaded | it is compared against what is running; stages that did not change are left alone, audio and all |
 | the default device changes | a chain on the default stores `@default-sink`, not a device; the new name comes in with the graph and the links are worked out again |
+| an application restarts | its new stream is pointed at the bus again; it is told apart from the old one by `object.serial`, because the id is often the same |
 | a bus is renamed | its `node.description` moved, so the node is made again under the new one; its `node.name` did not, so the chains on it never notice |
 
 Two rules follow from the filters' own design and are worth knowing before
@@ -245,7 +256,7 @@ dropdown keeps a row's worth of space between itself and whatever follows.
 cargo test
 ```
 
-59 of them. Five are worth pointing at:
+67 of them. Five are worth pointing at:
 
 - `window_tests` drives the real widgets headlessly through Slint's testing
   backend — it clicks into a field, types, clicks away, and asserts the value

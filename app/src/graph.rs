@@ -33,10 +33,22 @@ pub struct Node {
     pub name: String,
     pub description: String,
     pub media_class: String,
+    /// `application.name`, on an application's streams.
+    pub app: Option<String>,
     pub ports: Vec<Port>,
 }
 
 impl Node {
+    /// For an application's audio stream, whether it records (`true`) or
+    /// plays (`false`); `None` for anything that is not one.
+    pub fn stream_records(&self) -> Option<bool> {
+        match self.media_class.as_str() {
+            "Stream/Output/Audio" => Some(false),
+            "Stream/Input/Audio" => Some(true),
+            _ => None,
+        }
+    }
+
     pub fn ports_in(&self, dir: Dir) -> impl Iterator<Item = &Port> {
         self.ports.iter().filter(move |p| p.dir == dir)
     }
@@ -170,6 +182,29 @@ impl Graph {
             DEFAULT_SINK => Some(self.default_sink.as_deref()),
             _ => None,
         }
+    }
+
+    /// The applications with an audio stream going one way right now --
+    /// recording if `record`, playing otherwise -- by `application.name`,
+    /// sorted and each once.
+    pub fn apps(&self, record: bool) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|n| n.stream_records() == Some(record))
+            .filter_map(|n| n.app.clone())
+            .collect();
+        v.sort_by_key(|a| a.to_lowercase());
+        v.dedup();
+        v
+    }
+
+    /// How many streams that application has going that way.
+    pub fn streams_of(&self, app: &str, record: bool) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| n.stream_records() == Some(record) && n.app.as_deref() == Some(app))
+            .count()
     }
 
     /// Nodes that can act as an endpoint in the given direction, grouped and
@@ -377,6 +412,7 @@ mod tests {
             name: "dev".into(),
             description: "dev".into(),
             media_class: "Audio/Source".into(),
+            app: None,
             ports: ports
                 .iter()
                 .enumerate()
@@ -462,6 +498,32 @@ mod tests {
         // Picking the bus by name is still allowed; only the default is
         // second-guessed.
         assert_eq!(g.resolve_name("pwfx.bus.mic"), Some("pwfx.bus.mic"));
+    }
+
+    #[test]
+    fn applications_are_listed_by_which_way_their_streams_go() {
+        let stream = |name: &str, class: &str, app: &str| Node {
+            name: name.into(),
+            media_class: class.into(),
+            app: Some(app.into()),
+            ..node(&[])
+        };
+        let g = Graph {
+            nodes: vec![
+                stream("ff-1", "Stream/Output/Audio", "Firefox"),
+                stream("ff-2", "Stream/Output/Audio", "Firefox"),
+                stream("zoom-in", "Stream/Input/Audio", "Zoom"),
+                stream("mpv", "Stream/Output/Audio", "mpv"),
+                // A device is not an application, whatever it says.
+                Node { app: Some("card".into()), ..node(&[]) },
+            ],
+            connected: true,
+            ..Default::default()
+        };
+        assert_eq!(g.apps(false), ["Firefox", "mpv"]);
+        assert_eq!(g.apps(true), ["Zoom"]);
+        assert_eq!(g.streams_of("Firefox", false), 2);
+        assert_eq!(g.streams_of("Firefox", true), 0);
     }
 
     #[test]

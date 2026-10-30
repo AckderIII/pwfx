@@ -1,9 +1,9 @@
 import { Theme, Btn, Toggle, Meter } from "theme.slint";
 import { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow,
-          StageCard, MapDialog, NameField, SideRow, BusPane, Picker } from "parts.slint";
+          StageCard, MapDialog, NameField, SideRow, BusPane, Picker, BusAppRow } from "parts.slint";
 import { LineEdit, ScrollView } from "std-widgets.slint";
 
-export { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow }
+export { ParamRow, StageRow, ChainRow, LevelRow, MapRow, BusRow, BusUseRow, BusAppRow }
 export { RefusedWindow } from "refused.slint";
 
 component Card inherits Rectangle {
@@ -90,6 +90,11 @@ export component AppWindow inherits Window {
     in property <string> bus-status;
     in property <bool> bus-live;
     in property <[BusUseRow]> bus-uses;
+    in property <string> bus-apps-heading;
+    in property <string> bus-apps-hint;
+    in property <[BusAppRow]> bus-apps;
+    in property <[string]> bus-app-options;
+    in property <int> bus-app-index;
 
     // --- the selected chain ---------------------------------------------
     in property <bool> has-chain: false;
@@ -138,6 +143,9 @@ export component AppWindow inherits Window {
     callback set-bus-enabled(bool);
     callback set-bus-kind(int);
     callback set-bus-width(int);
+    callback pick-bus-app(int);
+    callback add-bus-app();
+    callback remove-bus-app(int);
 
     callback select-chain(int);
     callback add-chain();
@@ -371,6 +379,14 @@ export component AppWindow inherits Window {
                         status: root.bus-status;
                         live: root.bus-live;
                         uses: root.bus-uses;
+                        apps-heading: root.bus-apps-heading;
+                        apps-hint: root.bus-apps-hint;
+                        apps: root.bus-apps;
+                        app-options: root.bus-app-options;
+                        app-index: root.bus-app-index;
+                        pick-app(i) => { root.pick-bus-app(i); }
+                        add-app => { root.add-bus-app(); }
+                        remove-app(i) => { root.remove-bus-app(i); }
                         rename(t) => { root.rename-bus(t); }
                         set-enabled(v) => { root.set-bus-enabled(v); }
                         set-kind(i) => { root.set-bus-kind(i); }

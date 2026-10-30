@@ -141,6 +141,12 @@ pub struct Bus {
     pub width: usize,
     #[serde(default)]
     pub kind: BusKind,
+    /// Applications routed to this bus, by `application.name`: their
+    /// playback streams into a sink bus, their recording streams out of a
+    /// source bus. The kind decides which, because that is the only
+    /// direction the session manager will link a stream to it in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apps: Vec<String>,
 }
 
 impl Bus {
@@ -506,6 +512,7 @@ mod tests {
                 enabled: true,
                 width: 2,
                 kind: BusKind::Source,
+                apps: Vec::new(),
             });
         }
         let ids: Vec<&str> = st.buses.iter().map(|b| b.id.as_str()).collect();
@@ -535,6 +542,7 @@ mod tests {
             enabled: true,
             width: 1,
             kind: BusKind::Source,
+            apps: Vec::new(),
         };
         let node = b.node_name();
         b.name = "Studio talkback".into();
@@ -603,6 +611,7 @@ mod tests {
                 enabled: true,
                 width: 2,
                 kind: BusKind::Sink,
+                apps: Vec::new(),
             }],
         };
         let text = serde_json::to_string(&st).unwrap();
