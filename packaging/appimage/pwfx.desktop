@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=pwfx
+GenericName=PipeWire filter chains
+Comment=Filter chains and virtual devices for PipeWire
+Exec=pwfx
+Icon=pwfx
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=PipeWire;audio;filter;equalizer;compressor;microphone;

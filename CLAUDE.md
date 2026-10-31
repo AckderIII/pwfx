@@ -18,6 +18,7 @@ make test                 # offline: DSP cores diffed against reference/, byte f
 make check                # the above plus the live PipeWire tests (needs a daemon)
 make app                  # the filters and the GUI
 make app-test             # the GUI's own tests
+make appimage             # dist/pwfx-*.AppImage, built in a Debian 12 container (podman)
 make clean
 
 PWF_OFFLINE_ONLY=1 tests/all.sh      # skip everything that needs a daemon
@@ -256,6 +257,19 @@ itself through `edit_as`. Two things are kept out on purpose: `meters`, a
 display preference (an undo keeps the current setting), and values a filter
 reported back through `absorb_reports`, which never go through `edit`. Keep
 it that way: an edit made around `edit` is an edit that cannot be undone.
+
+**The AppImage bundles nothing but the binaries** (`packaging/appimage/`). Every
+binary links only libc, libm, libgcc_s and libpipewire, and the GUI loads its
+display libraries at runtime, so the AppDir is the ten executables, a
+`.desktop` file and an icon. `libpipewire` must stay the host's: it loads its
+own modules from the host's paths. `inside.sh` fails the build if a binary
+starts needing anything else -- decide then what to bundle, do not just add it.
+It is built on Debian 12 (glibc 2.36, PipeWire 0.3.65), which fixes the oldest
+system it runs on, runs `make test` there too, and `build.sh` starts the result
+on a stock Debian 12 to check it finds its filters. Not Ubuntu 22.04: the
+filters build there, but the app's PipeWire bindings (`libspa` 0.10) need API
+newer than its PipeWire 0.3.48, so an older base would need older bindings. The filters are found
+because pwfx looks next to its own executable; keep that lookup.
 
 **The window is optional.** `pwfx --headless` (`app/src/headless.rs`) runs
 the same engine and PipeWire thread from a plain loop; `boot`, `apply` and

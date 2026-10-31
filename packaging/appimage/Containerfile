@@ -1,0 +1,52 @@
+# The build environment for the pwfx AppImage.
+#
+# Debian 12: glibc 2.36 and PipeWire 0.3.65. An AppImage runs on systems
+# whose glibc is at least the one it was built against, and it uses the
+# host's libpipewire (see inside.sh), so the base decides the oldest system it
+# supports: Debian 12, Ubuntu 23.04 and 24.04 LTS, Fedora 37, and everything
+# newer.
+#
+# Not Ubuntu 22.04, though it was tried first: the filters build and pass
+# make test there, but the app's PipeWire bindings (libspa 0.10) use API that
+# its PipeWire 0.3.48 does not have -- spa_meta_first, the flags of
+# spa_video_info_raw, an unsigned modifier -- so the app could not have run
+# on a stock 22.04 anyway.
+FROM docker.io/library/debian:12
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential pkg-config libpipewire-0.3-dev libclang-dev clang \
+        curl ca-certificates file python3 \
+        desktop-file-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# The same toolchain the tree is developed with.
+ARG RUST_VERSION=1.97.1
+RUN curl -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION"
+ENV PATH=/root/.cargo/bin:$PATH
+
+# appimagetool, and the runtime it puts at the front of the image, both
+# pinned to a release and to its checksum. The runtime is the static type2
+# one, which needs no libfuse2 on the machine the AppImage runs on.
+# appimagetool is itself an AppImage; it is unpacked here so it runs in a
+# container without FUSE. Its AppRun finds its files from the path it was
+# called by, so it is called by its own path, from a wrapper -- a symlink
+# sends it looking under /usr/local/bin.
+ARG APPIMAGETOOL_VERSION=1.9.0
+ARG APPIMAGETOOL_SHA256=46fdd785094c7f6e545b61afcfb0f3d98d8eab243f644b4b17698c01d06083d1
+ARG RUNTIME_VERSION=20251108
+ARG RUNTIME_SHA256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+RUN cd /opt \
+ && curl -sSfL -o appimagetool.AppImage \
+      "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage" \
+ && echo "${APPIMAGETOOL_SHA256}  appimagetool.AppImage" | sha256sum -c - \
+ && chmod +x appimagetool.AppImage \
+ && ./appimagetool.AppImage --appimage-extract >/dev/null \
+ && mv squashfs-root appimagetool \
+ && rm appimagetool.AppImage \
+ && printf '#!/bin/sh\nexec /opt/appimagetool/AppRun "$@"\n' > /usr/local/bin/appimagetool \
+ && chmod +x /usr/local/bin/appimagetool \
+ && curl -sSfL -o /opt/runtime-x86_64 \
+      "https://github.com/AppImage/type2-runtime/releases/download/${RUNTIME_VERSION}/runtime-x86_64" \
+ && echo "${RUNTIME_SHA256}  /opt/runtime-x86_64" | sha256sum -c -

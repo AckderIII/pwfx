@@ -67,4 +67,9 @@ clean:
 	rm -rf $(BIN) $(OBJ)
 	-cd app && cargo clean
 
-.PHONY: all clean test check refs app app-test
+# The app as an AppImage, built in a Debian 12 container so it runs on that
+# and anything newer. Needs podman; writes dist/. See packaging/appimage.
+appimage:
+	packaging/appimage/build.sh
+
+.PHONY: all clean test check refs app app-test appimage

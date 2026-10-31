@@ -190,6 +190,31 @@ and names do not.
 | `src/headless.rs` | the same, with no window: a loop, signals, and the save file read but never written |
 | `ui/*.slint` | the window itself |
 
+## As an AppImage
+
+```sh
+make appimage     # from the top of the tree; needs podman
+./dist/pwfx-*-x86_64.AppImage
+./dist/pwfx-*-x86_64.AppImage --headless
+```
+
+One file holding `pwfx` and the nine filters. It is built in a Debian 12
+container, so it runs on any system with glibc 2.36 and PipeWire 0.3.65 or
+newer -- Debian 12, Ubuntu 23.04 and 24.04 LTS, Fedora 37 and everything
+since -- and needs no `libfuse2`. Not Ubuntu 22.04: its PipeWire 0.3.48 is
+older than the app's PipeWire bindings support. It carries no libraries: PipeWire, the graphics stack and the
+fonts are the system's, which is how they have to be found anyway.
+
+For headless mode from login, point the systemd unit at it:
+`ExecStart=%h/Applications/pwfx.AppImage --headless`. The filters are found
+inside the image the same way they are found next to the binary in `bin/`.
+
+The build runs `make test` inside the container too, so the filters in the
+AppImage have been proven byte-identical to their references under the
+compiler that built them; and it starts the result on a stock Debian 12 with
+nothing but `libpipewire-0.3-0` installed, to check it runs and finds its
+filters.
+
 ## Environment
 
 | | |

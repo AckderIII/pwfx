@@ -32,11 +32,14 @@ make            # the filters, into bin/
 make test       # DSP cores diffed against reference/, offline
 make check      # the above plus the live PipeWire tests
 make app        # the filters and the GUI (needs cargo)
+make appimage   # the GUI and filters as one AppImage, in dist/ (needs podman)
 ```
 
 Needs `libpipewire-0.3` development headers and a C compiler. The live tests
 additionally need a running PipeWire daemon with `pw-cat`, `pw-link` and
-`pw-dump`. The GUI additionally needs a Rust toolchain.
+`pw-dump`. The GUI additionally needs a Rust toolchain. `make appimage` needs
+only podman: it builds everything inside a Debian 12 container, so the result
+runs on Debian 12, Ubuntu 24.04, Fedora 37 and anything newer.
 
 ## Running one
 
