@@ -63,6 +63,13 @@ echo "de-esser against its design equations:"
 python3 tests/deess.py
 fails=$((fails+$?))
 
+# The noise suppressor: the comparison proves the framing, this measures what
+# it is for -- on real speech, and that RNNoise's delay is what it assumes.
+echo
+echo "noise suppressor on speech and noise:"
+python3 tests/denoise.py
+fails=$((fails+$?))
+
 # The response curves are drawn from the same coefficients the DSP runs, so
 # they are checked here too -- against theory, not against a reference.
 echo

@@ -90,7 +90,7 @@ See [Running without the window](#running-without-the-window).
   figure is what the filter last reported: a peak hold that falls back at
   20 dB/s, so the highest reading over a run is the one to trust. Silence
   reads as `—` rather than as the filters' -240 dB floor. A gate, compressor,
-  limiter or de-esser shows a third strip below those two, **gr**: how far it is
+  limiter, de-esser or noise suppressor shows a third strip below those two, **gr**: how far it is
   pulling the level down, as a bar growing from the right over 24 dB and a figure such as
   `-14.7`. Which stages get one comes from the filter's `--help`, like
   everything else here. A chain shows the sum of its stages' latency, in
@@ -201,7 +201,7 @@ make appimage     # from the top of the tree; needs podman
 ./dist/pwfx-*-x86_64.AppImage --headless
 ```
 
-One file holding `pwfx` and the nine filters. It is built in a Debian 12
+One file holding `pwfx` and the ten filters. It is built in a Debian 12
 container, so it runs on any system with glibc 2.36 and PipeWire 0.3.65 or
 newer -- Debian 12, Ubuntu 23.04 and 24.04 LTS, Fedora 37 and everything
 since -- and needs no `libfuse2`. Not Ubuntu 22.04: its PipeWire 0.3.48 is

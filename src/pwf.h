@@ -130,6 +130,12 @@ typedef struct {
                     float *const *in, float *const *out,
                     uint32_t channels, uint32_t n_samples);
 
+    /* Optional: the one sample rate the filter works at, which the node
+     * asks the graph for (node.rate). The graph honours it when it is
+     * allowed to run at that rate; design() still sees the rate it actually
+     * got, and has to cope with any other. 0, the default, asks for none. */
+    uint32_t rate;
+
     /* Optional, main thread, called once after init(): the most latency
      * design() can ever return, in samples, at init()'s max_rate. A filter
      * that delays its output sets it, and the framework then delays the dry

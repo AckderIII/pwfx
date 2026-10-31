@@ -66,3 +66,14 @@ run_case deess -r $RATE -c $CH -b 128  -k 0 -a 0 -e 5
 run_case deess -r $RATE -c $CH -b 256  -f 3000 -Q 0.5 -R 20 -g 30
 run_case deess -r $RATE -c 1   -b 4096 -f 9000 -Q 4 -t -6 -R 2 -g 6
 run_case deess -r $RATE -c $CH -b 1    -k 10 -d abs -t -40 -m wide
+
+# The noise suppressor: the reference reads a frame at a time, the core takes
+# blocks of any size and frames them itself, so block sizes that do and do
+# not divide the 480-sample frame are the point -- 1, 97, 480, 1024, 4096.
+# Full reduction, none, a partial one, and the voice-activity gate.
+run_case denoise -r $RATE -c $CH -b 128
+run_case denoise -r $RATE -c $CH -b 97   -n 100
+run_case denoise -r $RATE -c $CH -b 480  -n 0
+run_case denoise -r $RATE -c 1   -b 1    -n 12
+run_case denoise -r $RATE -c $CH -b 1024 --vad 0.6
+run_case denoise -r $RATE -c $CH -b 4096 -n 60 --vad 0.9

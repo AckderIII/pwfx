@@ -23,6 +23,14 @@ OBJ       = build
 # comparison and not the side it is compared with.
 HEADERS   = $(wildcard src/*.h)
 
+# RNNoise, vendored (third_party/rnnoise/README.pwfx), for pw_denoise, its
+# reference and its harness. Built as it is, on the portable baseline:
+# -Wno-cpp quiets its suggestion to build for a newer CPU, which the filters
+# deliberately do not.
+RNNOISE_INC = -Ithird_party/rnnoise/include
+RNNOISE_OBJ = $(patsubst third_party/rnnoise/src/%.c,$(OBJ)/rnnoise/%.o,\
+                $(wildcard third_party/rnnoise/src/*.c))
+
 all: $(FILTERS:%=$(BIN)/%)
 
 $(BIN) $(OBJ) $(BIN)/ref:
@@ -33,6 +41,22 @@ $(OBJ)/pwf.o: src/pwf.c src/pwf.h | $(OBJ)
 
 $(BIN)/pw_%: src/pw_%.c $(HEADERS) $(OBJ)/pwf.o | $(BIN)
 	$(CC) $(CFLAGS) $(WARN) $(PW_CFLAGS) -o $@ $< $(OBJ)/pwf.o $(PW_LIBS) $(LIBS)
+
+$(OBJ)/rnnoise:
+	@mkdir -p $@
+
+$(OBJ)/rnnoise/%.o: third_party/rnnoise/src/%.c | $(OBJ)/rnnoise
+	$(CC) $(CFLAGS) -Wno-cpp $(RNNOISE_INC) -Ithird_party/rnnoise/src -c -o $@ $<
+
+# The three that link RNNoise; explicit rules win over the patterns.
+$(BIN)/pw_denoise: src/pw_denoise.c $(HEADERS) $(OBJ)/pwf.o $(RNNOISE_OBJ) | $(BIN)
+	$(CC) $(CFLAGS) $(WARN) $(PW_CFLAGS) $(RNNOISE_INC) -o $@ $< $(OBJ)/pwf.o $(RNNOISE_OBJ) $(PW_LIBS) $(LIBS)
+
+$(BIN)/ref/denoise: reference/denoise.c $(RNNOISE_OBJ) | $(BIN)/ref
+	$(CC) $(CFLAGS) $(RNNOISE_INC) -o $@ $< $(RNNOISE_OBJ) $(LIBS)
+
+$(BIN)/t_denoise: tests/t_denoise.c $(HEADERS) $(RNNOISE_OBJ) | $(BIN)
+	$(CC) $(CFLAGS) $(WARN) $(RNNOISE_INC) -o $@ $< $(RNNOISE_OBJ) $(LIBS)
 
 # The reference implementations, built so the tests can compare against them.
 $(BIN)/ref/%: reference/%.c | $(BIN)/ref

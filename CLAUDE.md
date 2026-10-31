@@ -2,12 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Nine audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
-`pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`), each a standalone PipeWire filter
-node built on `pw_filter`; all but `pw_gain` with a raw stdin/stdout reference
-implementation in `reference/` behind them -- the first six ported from theirs,
-`pw_delay` and `pw_deess` written here together with their own -- and `pw_gain`
-with none; plus
+Ten audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
+`pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`, `pw_denoise`), each a standalone
+PipeWire filter node built on `pw_filter`; all but `pw_gain` with a raw
+stdin/stdout reference implementation in `reference/` behind them -- the first
+six ported from theirs, `pw_delay`, `pw_deess` and `pw_denoise` written here
+together with their own -- and `pw_gain` with none; plus
 `app/`, a Rust and Slint desktop app that drives them as plugins.
 
 ## Commands
@@ -156,6 +156,18 @@ windows the faster one leads at every onset and every word starts by reading
 as sibilance. The test's relative case models that detector from the
 description, so it would catch either.
 
+**`pw_denoise` is RNNoise, vendored in `third_party/rnnoise`** (unmodified,
+BSD-3; `README.pwfx` there says what was taken and how to update it). Only
+`pw_denoise`, its reference and its harness link it -- explicit Makefile rules,
+which win over the patterns. Its latency is RNNoise's two frames plus one of
+framing, 30 ms, and *two* is measured, not read: the code suggested one, and
+`tests/denoise.py` correlates RNNoise's output with real speech
+(`tests/data/speech.wav`, public domain) and found the dry signal a frame out
+-- a comb that the byte-identical comparison could not see, because core and
+reference shared the mistake. When the comparison cannot tell, measure against
+something outside both. It needs 48 kHz, asks for it through `pwf_desc.rate`,
+and passes its input through at any other rate.
+
 **Except `pw_delay`, which reports 0 on purpose.** Its delay is the effect, not
 processing it needs: reported, the graph would compensate it away, and lining
 one source up with another is the whole point of a plain delay. Do not "fix"
@@ -171,7 +183,7 @@ apart than one.
 same coefficients, same transposed direct form II, same double-precision state,
 same denormal flushing. `make test` proves it by running each filter's actual
 core through the reference's stream handling and `cmp`-ing against the reference
-binary — currently 60 cases across orders, block sizes, sidechain settings and
+binary — currently 66 cases across orders, block sizes, sidechain settings and
 edges, all byte-identical, plus four that drive the limiter hard into its
 ceiling and insist the breach count stays zero.
 
@@ -274,8 +286,9 @@ it that way: an edit made around `edit` is an edit that cannot be undone.
 
 **The AppImage bundles nothing but the binaries** (`packaging/appimage/`). Every
 binary links only libc, libm, libgcc_s and libpipewire, and the GUI loads its
-display libraries at runtime, so the AppDir is the ten executables, a
-`.desktop` file and an icon. `libpipewire` must stay the host's: it loads its
+display libraries at runtime, so the AppDir is the eleven executables, a
+`.desktop` file, an icon and RNNoise's licence, which its BSD terms ask for
+in binary distributions too. `libpipewire` must stay the host's: it loads its
 own modules from the host's paths. `inside.sh` fails the build if a binary
 starts needing anything else -- decide then what to bundle, do not just add it.
 It is built on Debian 12 (glibc 2.36, PipeWire 0.3.65), which fixes the oldest

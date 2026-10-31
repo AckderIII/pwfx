@@ -46,13 +46,17 @@ TRANSPARENT = {
     "pw_gate": ["-g", "0"],
     "pw_limit": ["-C", "0", "-i", "0"],
     "pw_deess": ["-g", "0"],
+    "pw_denoise": ["-n", "0"],
 }
+# pw_denoise's latency is fixed by RNNoise's framing; it has no lookahead to
+# set, and is tested at the one it has.
+NO_LOOKAHEAD = {"pw_denoise"}
 
 
 def start(binpath, look_ms):
     name = os.path.basename(binpath)
-    f = Filter([binpath, "-c", "1", "--node-name", NODE, "-k", str(look_ms)]
-               + TRANSPARENT[name])
+    look = [] if name in NO_LOOKAHEAD else ["-k", str(look_ms)]
+    f = Filter([binpath, "-c", "1", "--node-name", NODE] + look + TRANSPARENT[name])
     dump = {}
     while True:
         l = f.line(10.0)

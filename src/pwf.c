@@ -1280,6 +1280,8 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
     }
     if (s.core[C_NODE_LATENCY].str[0])
         pw_properties_set(props, PW_KEY_NODE_LATENCY, s.core[C_NODE_LATENCY].str);
+    if (desc->rate)
+        pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", desc->rate);
 
     s.filter = pw_filter_new_simple(s.loop, node_name, props,
                                     &filter_events, &s);

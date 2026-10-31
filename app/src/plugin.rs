@@ -580,14 +580,17 @@ mod against_the_real_filters {
             assert!(d.param("latency").unwrap().readonly);
 
             // Every filter in the tree draws a curve but the delay, whose
-            // response is a comb far finer than any plot -- and each says so.
-            assert_eq!(d.curve, d.name != "pw_delay", "{}: --curve in its help", d.name);
+            // response is a comb far finer than any plot, and the noise
+            // suppressor, whose response adapts to what it hears -- and each
+            // says so.
+            let curveless = ["pw_delay", "pw_denoise"].contains(&d.name.as_str());
+            assert_eq!(d.curve, !curveless, "{}: --curve in its help", d.name);
 
             // A gain-reduction meter on exactly the filters that reduce
             // gain, read-only and so never a knob. The window draws the
             // strip off this, so it must not appear on a low-pass.
-            let dynamics =
-                ["pw_gate", "pw_comp", "pw_limit", "pw_deess"].contains(&d.name.as_str());
+            let dynamics = ["pw_gate", "pw_comp", "pw_limit", "pw_deess", "pw_denoise"]
+                .contains(&d.name.as_str());
             match d.param("gr") {
                 Some(gr) => {
                     assert!(dynamics, "{} has a gr meter", d.name);

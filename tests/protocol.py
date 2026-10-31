@@ -183,7 +183,7 @@ def main():
         # dynamics filters have it, read-only, and the rest do not, so a
         # consumer can tell from the dump which stages get a meter.
         has_gr = any(l.split(" ")[0] == "gr" for l in dump)
-        want_gr = name in ("pw_gate", "pw_comp", "pw_limit", "pw_deess")
+        want_gr = name in ("pw_gate", "pw_comp", "pw_limit", "pw_deess", "pw_denoise")
         check(has_gr == want_gr, "%s gr in the dump" % ("has" if want_gr else "no"))
         if has_gr:
             f.send("gr 3")

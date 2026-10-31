@@ -37,6 +37,9 @@ install -m644 packaging/appimage/pwfx.desktop "$AD/usr/share/applications/"
 install -m644 packaging/appimage/pwfx.svg "$AD/"
 install -m644 packaging/appimage/pwfx.svg "$AD/usr/share/icons/hicolor/scalable/apps/"
 ln -s pwfx.svg "$AD/.DirIcon"
+# pw_denoise carries RNNoise, whose BSD licence asks for its notice in every
+# binary distribution, not only the source.
+install -Dm644 third_party/rnnoise/COPYING "$AD/usr/share/doc/pwfx/rnnoise-COPYING"
 
 # Nothing is bundled. Every binary links only libc, libm, libgcc_s and
 # libpipewire, and everything graphical is loaded at runtime from the host --

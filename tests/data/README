@@ -1,0 +1,18 @@
+speech.wav -- six seconds of a human voice, for tests/denoise.py
+
+A noise suppressor's whole job is to leave speech alone, and no synthetic
+signal stands in for a voice, so the test needs a real one.
+
+Source:   "Autumn Prophecy", read for LibriVox's Short Poetry Collection 137
+          https://archive.org/details/spc137_1411_librivox
+          file spc137_autumnprophecy_ik_64kb.mp3
+          (sha256 515a2a59a47f9840685ec91c647a4d2ad6e6d51e211055c0c989b2a5f4093baa)
+Licence:  Public Domain Mark 1.0, as LibriVox releases every recording --
+          https://creativecommons.org/publicdomain/mark/1.0/ -- so it may be
+          copied, cut and redistributed without conditions.
+Made by:  ffmpeg -i spc137_autumnprophecy_ik_64kb.mp3 -ss 14 -t 6 \
+                 -ac 1 -ar 48000 -sample_fmt s16 speech.wav
+
+Mono, 48 kHz, 16-bit PCM: Python's wave module reads it, so the test needs
+nothing else. Speech at -18..-40 dBFS with natural pauses, in which the
+recording's own room noise sits at about -60..-68 dBFS.

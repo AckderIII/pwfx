@@ -31,7 +31,7 @@ fi
 step "2. control protocol"
 run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
                               bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain \
-                              bin/pw_delay bin/pw_deess
+                              bin/pw_delay bin/pw_deess bin/pw_denoise
 
 step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
@@ -113,6 +113,14 @@ run python3 tests/live.py bin/pw_deess -c 2 -d abs -t -30 -R 4 -g 30 \
 run python3 tests/live.py bin/pw_deess -c 2 -t -12 -R 2 -g 30 \
     -- --audio "200,6500" "200=0+-0.3,6500=-4.60+-0.3"
 
+# The noise suppressor in the graph: at reduction 0 a tone comes through
+# untouched, which proves the framing live and the 48 kHz it asked for; its
+# latency is the three frames it reports. What it does to speech and noise
+# is measured offline on real speech, in tests/denoise.py.
+run python3 tests/live.py bin/pw_denoise -c 2 -n 0 \
+    -- "latency" "latency 1440" "reduction 150" ERROR "gr 3" ERROR \
+    --audio "1000" "1000=0+-0.3"
+
 # the delay measured against itself, so the graph's own timing drops out:
 # exact to the sample, reported as no latency, and no click on a time change
 run python3 tests/delay.py bin/pw_delay
@@ -120,7 +128,8 @@ run python3 tests/delay.py bin/pw_delay
 # Bypassing a lookahead filter keeps its timing and its crossfade clean:
 # impulse gaps unchanged through bypass on and off, and the tone at half a
 # period of the latency -- the one an undelayed dry signal cancels -- level.
-run python3 tests/bypass.py bin/pw_comp bin/pw_gate bin/pw_limit bin/pw_deess
+run python3 tests/bypass.py bin/pw_comp bin/pw_gate bin/pw_limit bin/pw_deess \
+    bin/pw_denoise
 
 # out-level with nothing connected to the output: the level the filter
 # produces, from its loudest channel
@@ -130,7 +139,7 @@ step "4. filters composed into a chain"
 run python3 tests/chain.py
 
 step "5. parameters under load"
-for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit pw_gain pw_delay pw_deess; do
+for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit pw_gain pw_delay pw_deess pw_denoise; do
     run python3 tests/stress.py bin/$b -c 2
 done
 # The compressor is a gain stage: its output is the input times

@@ -1,9 +1,10 @@
 # pw_* — PipeWire filter nodes
 
-Nine audio filters, each a standalone PipeWire filter node built on
+Ten audio filters, each a standalone PipeWire filter node built on
 `pw_filter`. Six are ported from the raw stdin/stdout reference
-implementations in `reference/`; `pw_delay` and `pw_deess` were written here
-together with references of their own; `pw_gain` has none, and is checked against arithmetic
+implementations in `reference/`; `pw_delay`, `pw_deess` and `pw_denoise` were
+written here together with references of their own -- `pw_denoise` around
+RNNoise, vendored in `third_party/rnnoise`; `pw_gain` has none, and is checked against arithmetic
 instead.
 
 | filter | what it is | latency |
@@ -17,6 +18,7 @@ instead.
 | `pw_gain`  | gain, mute, polarity per side, balance; every change ramped | none |
 | `pw_delay` | delay up to 2 s, with feedback and mix for an echo | none reported (the delay is the effect) |
 | `pw_deess` | de-esser: split-band dynamic EQ or wide, relative or absolute detection | lookahead |
+| `pw_denoise` | noise suppression for voice (RNNoise), limited reduction, optional voice gate; 48 kHz | 30 ms |
 
 Each one takes its settings from the command line, prints them on stdout at
 startup, and accepts changes on stdin while audio is flowing.
@@ -135,7 +137,7 @@ reduction. Read `gr` instead.
 
 ### Gain reduction
 
-`pw_gate`, `pw_comp`, `pw_limit` and `pw_deess` have a third meter, `gr`: how far the
+`pw_gate`, `pw_comp`, `pw_limit`, `pw_deess` and `pw_denoise` have a third meter, `gr`: how far the
 filter is pulling the level down, in dB, as a positive number. It is
 reported on the same `meter` timer as the levels, and held the same way,
 falling back at 20 dB/s. The other filters have no `gr` at all: it is
@@ -163,6 +165,8 @@ moment it is applied:
   step.
 - `pw_deess`: the smoothed cut. In split mode that is exactly the cut at
   the band's centre; in wide mode, the cut to everything.
+- `pw_denoise`: how much quieter each 10 ms frame came out than it went in
+  -- the noise it took away, and nothing while someone is talking.
 
 A fully bypassed filter reads 0: it is still computing a gain, but none of
 it reaches the output.
@@ -228,7 +232,7 @@ Every filter has these on top of its own:
 | `bypass` | pass the input through, crossfaded over 10 ms so it cannot click; a filter with latency keeps it, so bypassing does not move the audio in time |
 | `meter` | how often to report `in-level`, `out-level` and `gr`, in ms; 0 (the default) is off |
 | `in-level`, `out-level` | peak level at the input ports, and of the filter's output whether connected or not, in dBFS, floored at -240 (read-only) |
-| `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_limit` and `pw_deess` only (read-only) |
+| `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_limit`, `pw_deess` and `pw_denoise` only (read-only) |
 | `max-rate` | the highest rate delay lines are sized for at startup (command line only) |
 | `node-name`, `target`, `node-latency` | PipeWire plumbing (command line only) |
 
@@ -351,6 +355,9 @@ tests/bypass.py    bypassing a lookahead filter keeps its timing, and its
                    crossfade does not comb the signal with itself
 tests/meter.py     out-level with the output connected to nothing: the
                    right level, from the loudest channel
+tests/denoise.py   pw_denoise on real speech, offline: RNNoise lines up
+                   with its input, the reduction is a limit, the gate is
+                   exact, speech survives and the noise between it goes
 tests/live.py      one filter in the real graph: node and ports, live
                    parameter changes, reported latency, and the measured
                    frequency response of audio played through it
