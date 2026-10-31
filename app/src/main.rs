@@ -148,7 +148,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = match parse_args(&args) {
         Ok(Mode::Help) => {
-            println!("{USAGE}");
+            // Not println!, which panics when the reader has gone:
+            // `pwfx --help | head` is not a reason to crash.
+            use std::io::Write;
+            let _ = writeln!(std::io::stdout(), "{USAGE}");
             return ExitCode::SUCCESS;
         }
         Ok(mode) => mode,
