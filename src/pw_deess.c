@@ -132,6 +132,12 @@ static size_t deess_pw_curve(void *user, const void *coeffs, double rate,
     return n;
 }
 
+/* The longest the lookahead can make it, for the bypass's dry delay. */
+static uint32_t deess_pw_max_latency(void *user)
+{
+    return (uint32_t)((deess_state *)user)->max_L;
+}
+
 int main(int argc, char **argv)
 {
     static deess_state state;
@@ -167,6 +173,7 @@ int main(int argc, char **argv)
         .validate   = deess_pw_validate,
         .design     = deess_pw_design,
         .process    = deess_pw_process,
+        .max_latency = deess_pw_max_latency,
         .gain_reduction = deess_pw_gr,
         .curve_kind = PWF_CURVE_FREQ,
         .curve      = deess_pw_curve,

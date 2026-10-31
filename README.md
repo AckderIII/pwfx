@@ -223,7 +223,7 @@ Every filter has these on top of its own:
 | `channels` | number of mono port pairs, 1..64 (command line only) |
 | `rate` | the graph's sample rate, reported when it changes (read-only) |
 | `latency` | samples of latency this filter adds, reported to the graph (read-only) |
-| `bypass` | pass the input through, crossfaded over 10 ms so it cannot click |
+| `bypass` | pass the input through, crossfaded over 10 ms so it cannot click; a filter with latency keeps it, so bypassing does not move the audio in time |
 | `meter` | how often to report `in-level`, `out-level` and `gr`, in ms; 0 (the default) is off |
 | `in-level`, `out-level` | peak level at the input and output ports in dBFS, floored at -240 (read-only) |
 | `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_limit` and `pw_deess` only (read-only) |
@@ -345,6 +345,8 @@ tests/deess.py     pw_deess against its design equations, offline: the
                    in both detections and both modes, and bit-exact idle
 tests/delay.py     pw_delay in the graph: the delay exact to the sample,
                    none of it reported as latency, no click on a change
+tests/bypass.py    bypassing a lookahead filter keeps its timing, and its
+                   crossfade does not comb the signal with itself
 tests/live.py      one filter in the real graph: node and ports, live
                    parameter changes, reported latency, and the measured
                    frequency response of audio played through it

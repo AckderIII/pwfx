@@ -111,6 +111,12 @@ static size_t limit_pw_curve(void *user, const void *coeffs, double rate,
     return n;
 }
 
+/* The longest the lookahead can make it, for the bypass's dry delay. */
+static uint32_t limit_pw_max_latency(void *user)
+{
+    return (uint32_t)((limit_state *)user)->max_DT;
+}
+
 int main(int argc, char **argv)
 {
     static limit_state state;
@@ -144,6 +150,7 @@ int main(int argc, char **argv)
         .fini       = limit_pw_fini,
         .design     = limit_pw_design,
         .process    = limit_pw_process,
+        .max_latency = limit_pw_max_latency,
         .gain_reduction = limit_pw_gr,
         .curve_kind = PWF_CURVE_LEVEL,
         .curve      = limit_pw_curve,

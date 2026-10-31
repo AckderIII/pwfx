@@ -115,6 +115,7 @@ struct pwf {
     uint32_t latency;               /* samples, as last designed */
 
     uint8_t *slots;                 /* PWF_SLOTS * desc->coeff_size */
+    uint32_t slot_latency[PWF_SLOTS];  /* what design() returned for each */
     _Atomic uint32_t pub;           /* published slot counter */
 
     _Atomic uint32_t rt_rate;       /* rate seen by the data thread */
@@ -142,6 +143,18 @@ struct pwf {
 
     float *zero;                    /* silence, for unconnected inputs */
     float *sink;                    /* scratch, for unconnected outputs */
+
+    /* The bypass's dry signal, delayed by the latency the processed signal
+     * has, for a filter that has one (pwf_desc.max_latency). Channel-major,
+     * dry_frames per channel: the longest latency plus one whole slice, so
+     * a slice can be written in before it is read out without overwriting
+     * history it still needs. Written every block, bypassed or not, so the
+     * history is there the moment bypass is switched on. */
+    float   *dry_ring;
+    float   *dry_buf;               /* one slice of the delayed dry signal */
+    uint32_t dry_frames;
+    uint32_t dry_max;               /* the longest latency it can delay by */
+    uint32_t dry_w;                 /* data thread only */
 
     /* data thread only */
     uint32_t rt_last_pub;
@@ -393,6 +406,10 @@ static void design_into(struct pwf *s, uint32_t idx)
 
     memset(slot, 0, s->desc->coeff_size);
     lat = s->desc->design(s->desc->user, s->fp, s->rate, s->channels, slot);
+    /* Beside its blob, published by the same release store, so the data
+     * thread never delays the dry signal by one configuration's latency
+     * while running another's coefficients. */
+    s->slot_latency[idx % PWF_SLOTS] = lat;
 
     if (lat != s->latency) {
         s->latency = lat;
@@ -700,7 +717,7 @@ static void on_process(void *data, struct spa_io_position *position)
     struct pwf *s = data;
     uint32_t total = position->clock.duration;
     uint32_t rate  = position->clock.rate.denom;
-    uint32_t nch = s->channels, i, j, pub, done;
+    uint32_t nch = s->channels, i, j, pub, done, lat;
     float *base_in[PWF_MAX_CHANNELS], *base_out[PWF_MAX_CHANNELS];
     float *in[PWF_MAX_CHANNELS], *out[PWF_MAX_CHANNELS];
     const void *coeffs;
@@ -725,6 +742,8 @@ static void on_process(void *data, struct spa_io_position *position)
 
     /* One configuration for the whole quantum, read once. */
     pub     = atomic_load_explicit(&s->pub, memory_order_acquire);
+    lat     = s->slot_latency[pub % PWF_SLOTS];
+    if (lat > s->dry_max) lat = s->dry_max;
     coeffs  = s->slots + (size_t)(pub % PWF_SLOTS) * s->desc->coeff_size;
     changed = (pub != s->rt_last_pub);
     s->rt_last_pub = pub;
@@ -745,6 +764,19 @@ static void on_process(void *data, struct spa_io_position *position)
         for (i = 0; i < nch; i++) {
             in[i]  = base_in[i]  ? base_in[i]  + done : s->zero;
             out[i] = base_out[i] ? base_out[i] + done : s->sink;
+        }
+
+        /* Every slice goes into the bypass's dry delay, bypassed or not, so
+         * its history is already there when bypass is switched on. */
+        if (s->dry_ring) {
+            for (i = 0; i < nch; i++) {
+                float *ring = s->dry_ring + (size_t)i * s->dry_frames;
+                uint32_t w = s->dry_w;
+                for (j = 0; j < n; j++) {
+                    ring[w] = in[i][j];
+                    if (++w == s->dry_frames) w = 0;
+                }
+            }
         }
 
         /* An unconnected port reads from the shared silence buffer and an
@@ -779,6 +811,16 @@ static void on_process(void *data, struct spa_io_position *position)
             for (i = 0; i < nch; i++) {
                 double m = s->rt_mix;
                 const float *dry = in[i];
+                if (s->dry_ring) {
+                    /* the input as late as the processed signal is */
+                    const float *ring = s->dry_ring + (size_t)i * s->dry_frames;
+                    uint32_t rd = (s->dry_w + s->dry_frames - lat) % s->dry_frames;
+                    for (j = 0; j < n; j++) {
+                        s->dry_buf[j] = ring[rd];
+                        if (++rd == s->dry_frames) rd = 0;
+                    }
+                    dry = s->dry_buf;
+                }
                 float *o = out[i];
                 for (j = 0; j < n; j++) {
                     if      (m < tgt) { m += inc; if (m > tgt) m = tgt; }
@@ -802,6 +844,8 @@ static void on_process(void *data, struct spa_io_position *position)
             }
         }
 
+        if (s->dry_ring)
+            s->dry_w = (s->dry_w + n) % s->dry_frames;
         done += n;
     }
 
@@ -1160,6 +1204,19 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
         goto done;
     }
 
+    /* The bypass's dry delay, sized once for the longest latency the filter
+     * can ever have, like every other delay line. */
+    if (desc->max_latency && (s.dry_max = desc->max_latency(desc->user)) > 0) {
+        s.dry_frames = s.dry_max + PWF_MAX_QUANTUM + 1;
+        s.dry_ring = calloc((size_t)s.dry_frames * s.channels, sizeof *s.dry_ring);
+        s.dry_buf  = calloc(PWF_MAX_QUANTUM, sizeof *s.dry_buf);
+        if (!s.dry_ring || !s.dry_buf) {
+            err("out of memory");
+            rc = 1;
+            goto done;
+        }
+    }
+
     /* Slot 0 has to be valid before the data thread ever runs. */
     design_into(&s, 0);
     atomic_store_explicit(&s.pub, 0, memory_order_release);
@@ -1253,5 +1310,7 @@ done:
     free(s.slots);
     free(s.zero);
     free(s.sink);
+    free(s.dry_ring);
+    free(s.dry_buf);
     return rc;
 }

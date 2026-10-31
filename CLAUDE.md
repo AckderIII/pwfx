@@ -130,8 +130,20 @@ own output.
 
 **Latency is real and must be reported.** The lookahead filters delay their
 output by L samples and publish it as `SPA_PARAM_ProcessLatency` (the return
-value of `design()`), so the graph compensates. Changing a lookahead live steps
-the delay line and is audible — that is accepted and documented, not a bug.
+value of `design()`), so the graph and whatever reads latency from it know.
+Changing a lookahead live steps the delay line and is audible — that is
+accepted and documented, not a bug.
+
+**Bypass keeps the latency.** A filter that delays its output sets
+`pwf_desc.max_latency`, and the framework then delays the bypass's dry signal
+by the latency of the blob in use (stored beside it in `slot_latency`, so the
+two always match), from a ring filled every block whether bypassed or not.
+Without it a bypassed lookahead filter passed its input undelayed: every toggle
+moved the output by L while the filter went on reporting L, and the crossfade
+mixed the signal with itself shifted by L -- a comb that took a tone at half a
+period of L from 0.300 to 0.086. A new filter that reports latency must set
+`max_latency`; `tests/bypass.py` measures the timing and the crossfade in the
+graph and failed on both before the fix.
 
 **The de-esser's detector averages the band and the whole signal over the same
 5 ms -- keep them equal.** Relative detection compares the two, and both

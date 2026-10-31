@@ -117,6 +117,11 @@ run python3 tests/live.py bin/pw_deess -c 2 -t -12 -R 2 -g 30 \
 # exact to the sample, reported as no latency, and no click on a time change
 run python3 tests/delay.py bin/pw_delay
 
+# Bypassing a lookahead filter keeps its timing and its crossfade clean:
+# impulse gaps unchanged through bypass on and off, and the tone at half a
+# period of the latency -- the one an undelayed dry signal cancels -- level.
+run python3 tests/bypass.py bin/pw_comp bin/pw_gate bin/pw_limit bin/pw_deess
+
 step "4. filters composed into a chain"
 run python3 tests/chain.py
 

@@ -162,6 +162,12 @@ static size_t comp_pw_curve(void *user, const void *coeffs, double rate,
     return n;
 }
 
+/* The longest the lookahead can make it, for the bypass's dry delay. */
+static uint32_t comp_pw_max_latency(void *user)
+{
+    return (uint32_t)((comp_state *)user)->max_L;
+}
+
 int main(int argc, char **argv)
 {
     static comp_state state;
@@ -196,6 +202,7 @@ int main(int argc, char **argv)
         .validate   = comp_pw_validate,
         .design     = comp_pw_design,
         .process    = comp_pw_process,
+        .max_latency = comp_pw_max_latency,
         .gain_reduction = comp_pw_gr,
         .curve_kind = PWF_CURVE_LEVEL,
         .curve      = comp_pw_curve,

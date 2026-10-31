@@ -167,6 +167,12 @@ static size_t gate_pw_curve(void *user, const void *coeffs, double rate,
     return k;
 }
 
+/* The longest the lookahead can make it, for the bypass's dry delay. */
+static uint32_t gate_pw_max_latency(void *user)
+{
+    return (uint32_t)((gate_state *)user)->max_L;
+}
+
 int main(int argc, char **argv)
 {
     static gate_state state;
@@ -195,6 +201,7 @@ int main(int argc, char **argv)
         .validate   = gate_pw_validate,
         .design     = gate_pw_design,
         .process    = gate_pw_process,
+        .max_latency = gate_pw_max_latency,
         .gain_reduction = gate_pw_gr,
         .curve_kind = PWF_CURVE_LEVEL,
         .curve      = gate_pw_curve,

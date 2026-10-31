@@ -130,6 +130,15 @@ typedef struct {
                     float *const *in, float *const *out,
                     uint32_t channels, uint32_t n_samples);
 
+    /* Optional, main thread, called once after init(): the most latency
+     * design() can ever return, in samples, at init()'s max_rate. A filter
+     * that delays its output sets it, and the framework then delays the dry
+     * signal of the bypass by the same latency the processed one has: a
+     * bypassed stage keeps its timing, so the latency it reports stays true
+     * and the bypass crossfade blends two signals that are aligned in time
+     * rather than one with a copy of itself shifted by the lookahead. */
+    uint32_t (*max_latency)(void *user);
+
     /* Optional, realtime thread: the most gain reduction the filter has
      * applied since the last call, in dB >= 0. Called after every process()
      * with the same coeffs, so it must be as cheap and as lock-free as that.
