@@ -204,12 +204,19 @@ export component AppWindow inherits Window {
                     color: Theme.accent;
                     vertical-alignment: center;
                 }
+                // The one thing in the toolbar that can go: at the
+                // window's narrowest it gives up its room rather than
+                // pushing the buttons off the right-hand edge.
                 Text {
                     text: "PipeWire filter chains";
                     font-size: Theme.fs-small;
                     color: Theme.text-faint;
                     vertical-alignment: center;
                     horizontal-stretch: 1;
+                    min-width: 0px;
+                    // all of it or none: an ellipsis on its own beside
+                    // the name looks like a mistake
+                    visible: self.width >= self.preferred-width;
                 }
 
                 Text {
@@ -227,10 +234,11 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                Rectangle { width: 10px; }
+                Rectangle { width: 4px; }
 
                 LineEdit {
-                    width: 130px;
+                    min-width: 80px;
+                    preferred-width: 130px;
                     placeholder-text: "preset name";
                     text: root.preset-name;
                     edited(t) => { root.preset-name = t; }
@@ -243,7 +251,7 @@ export component AppWindow inherits Window {
                     clicked => { root.save-preset(root.preset-name); root.preset-name = ""; }
                 }
                 Picker {
-                    width: 150px;
+                    width: 130px;
                     options: root.presets;
                     index: root.preset-index;
                     picked(i) => { root.preset-index = i; }
@@ -266,7 +274,7 @@ export component AppWindow inherits Window {
 
                 Btn {
                     height: Theme.control;
-                    text: "Save as default";
+                    text: "Set default";
                     clicked => { root.save-default(); }
                 }
                 Btn {

@@ -2121,6 +2121,7 @@ mod window_tests {
             an_endpoint_picker_survives_its_list_changing().await;
             the_bus_pane_comes_up_and_commits_its_name().await;
             a_picker_never_runs_into_the_control_beside_it().await;
+            the_toolbar_fits_the_narrowest_window().await;
             the_refusal_dialog_wraps_and_closes().await;
             a_gr_strip_shows_only_where_there_is_a_reduction().await;
             a_refresh_leaves_lists_that_did_not_change_alone().await;
@@ -2435,6 +2436,31 @@ mod window_tests {
         win.hide().unwrap();
     }
 
+    /// At the window's minimum width every toolbar button is inside the
+    /// window. It was not: "Restore default" hung off the right-hand edge.
+    async fn the_toolbar_fits_the_narrowest_window() {
+        let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
+        win.set_presets(strings(&["voice".into()]));
+        show(&win);
+        let min_w = 900.0;
+        win.window().set_size(slint::LogicalSize::new(min_w, 700.0));
+        settle(&win).await;
+
+        let in_toolbar: Vec<(String, f32)> =
+            testing::ElementHandle::find_by_element_id(&win, "Btn::label")
+                .filter(|e| e.absolute_position().y < 48.0)
+                .map(|e| {
+                    let right = e.absolute_position().x + e.size().width;
+                    (e.accessible_label().map(|s| s.to_string()).unwrap_or_default(), right)
+                })
+                .collect();
+        assert!(in_toolbar.iter().any(|(t, _)| t == "Restore default"), "{in_toolbar:?}");
+        for (text, right) in &in_toolbar {
+            assert!(*right <= min_w - 8.0, "{text:?} ends at {right}, past the {min_w} window");
+        }
+        win.hide().unwrap();
+    }
+
     async fn a_picker_never_runs_into_the_control_beside_it() {
         let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
         win.set_presets(strings(&["voice".into(), "guitar".into()]));
@@ -2467,14 +2493,14 @@ mod window_tests {
         assert!(pickers.len() >= 4, "expected the window to build its dropdowns");
 
         // The one the bug was reported on, stated as what it should be
-        // rather than as "not overlapping": `width: 150px` means 150px.
+        // rather than as "not overlapping": `width: 130px` means 130px.
         let toolbar = pickers
             .iter()
             .find(|p| p.2 < 60.0)
             .expect("no dropdown in the toolbar");
         assert_eq!(
             toolbar.1 - toolbar.0,
-            150.0,
+            130.0,
             "the preset dropdown must take the width the toolbar gives it"
         );
 

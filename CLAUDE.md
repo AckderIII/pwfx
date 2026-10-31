@@ -323,6 +323,10 @@ Two consequences to keep in mind:
   software renderer and writes raw RGBA (a `W H` line, then pixels). That is
   how the stretched-but-letterboxed curve plots were caught: Slint's `Path`
   keeps its aspect ratio unless told `fit: fill`.
+- **The toolbar has to fit the window at its minimum width (900px).** It did
+  not, and nobody saw it at the default size: `the_toolbar_fits_the_narrowest_window`
+  sets the real window to 900px and measures every toolbar button. The
+  subtitle is the one thing that gives up its room, all or nothing.
 - **Hand a dropdown a new list only when the list changed.** A new options
   model rebuilds an open popup under the pointer: it flickers and the click is
   lost. Every list in `refresh()` is compared against a key in `Models` first,

@@ -191,7 +191,7 @@ and names do not.
 | `PWFX_CONFIG_DIR` | where to keep the save files. Otherwise `$XDG_CONFIG_HOME/pwfx`, or `~/.config/pwfx`. |
 
 Save files: `session.json` (written as you work, restored at start),
-`default.json` (**Save as default** / **Restore default**, and what a first
+`default.json` (**Set default** / **Restore default**, and what a first
 run starts from), `presets/*.json`.
 
 ## Notes and limits
