@@ -1,0 +1,25 @@
+RNNoise, vendored for pw_denoise
+================================
+
+What:     RNNoise 0.2, noise suppression with a recurrent neural network,
+          by Jean-Marc Valin / Xiph.Org. BSD-3-Clause: see COPYING, which
+          has to travel with every copy, source or binary.
+From:     https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz
+sha256:   90fce4b00b9ff24c08dbfe31b82ffd43bae383d85c5535676d28b0a2b11c0d37
+
+The release tarball, not the git tree: it carries src/rnnoise_data.c, the
+trained model compiled in as C, which the git tree only downloads at
+build time. Vendored so pw_denoise needs nothing installed and the AppImage
+stays self-contained.
+
+Taken: the ten sources of librnnoise's own build (Makefile.am,
+RNNOISE_SOURCES) and exactly the headers they include, as `cc -MM` lists
+them; COPYING, AUTHORS and README. Not taken: the x86 runtime-dispatch
+sources (SSE4.1/AVX2), which librnnoise only builds when configured for it
+-- the filters stay on the portable x86-64 baseline, so one binary runs on
+every x86-64 CPU -- the examples, the training tools, the autotools.
+
+No file here is modified. To update: replace these files from a new release
+tarball by the same rule, update the version and checksum above, and check
+pw_denoise's latency (denoise_dsp.h, DN_LATENCY) still holds: tests/denoise.py
+measures it.
