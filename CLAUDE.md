@@ -349,10 +349,12 @@ Two consequences to keep in mind:
   software renderer and writes raw RGBA (a `W H` line, then pixels). That is
   how the stretched-but-letterboxed curve plots were caught: Slint's `Path`
   keeps its aspect ratio unless told `fit: fill`.
-- **The toolbar has to fit the window at its minimum width (900px).** It did
-  not, and nobody saw it at the default size: `the_toolbar_fits_the_narrowest_window`
-  sets the real window to 900px and measures every toolbar button. The
-  subtitle is the one thing that gives up its room, all or nothing.
+- **Everything has to fit the window at its minimum width (900px).** The
+  toolbar did not, nor did the chain header once its latency was added, and
+  nobody saw either at the default size: `the_window_fits_its_narrowest_size`
+  sets the real window to 900px and measures every button and dropdown. What
+  gives way when room runs out: the toolbar's subtitle (all or nothing), the
+  name field (260px down to 100px), the chain's latency (elided).
 - **Hand a dropdown a new list only when the list changed.** A new options
   model rebuilds an open popup under the pointer: it flickers and the click is
   lost. Every list in `refresh()` is compared against a key in `Models` first,

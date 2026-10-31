@@ -2199,7 +2199,7 @@ mod window_tests {
             an_endpoint_picker_survives_its_list_changing().await;
             the_bus_pane_comes_up_and_commits_its_name().await;
             a_picker_never_runs_into_the_control_beside_it().await;
-            the_toolbar_fits_the_narrowest_window().await;
+            the_window_fits_its_narrowest_size().await;
             the_refusal_dialog_wraps_and_closes().await;
             a_gr_strip_shows_only_where_there_is_a_reduction().await;
             a_refresh_leaves_lists_that_did_not_change_alone().await;
@@ -2610,27 +2610,38 @@ mod window_tests {
         win.hide().unwrap();
     }
 
-    /// At the window's minimum width every toolbar button is inside the
-    /// window. It was not -- "Restore default" hung off the edge before undo
-    /// and redo were added, and they pushed two more buttons after it.
-    async fn the_toolbar_fits_the_narrowest_window() {
+    /// At the window's minimum width every button and every dropdown is
+    /// inside the window. They were not: "Restore default" hung off the
+    /// toolbar, and the chain header's width picker and "Delete chain" off
+    /// its row once the chain's latency was added to it -- each found by
+    /// looking, at a width no test had looked at.
+    async fn the_window_fits_its_narrowest_size() {
         let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
         win.set_presets(strings(&["voice".into()]));
+        win.set_chain_latency("+10.0 ms latency".into());
         show(&win);
         let min_w = 900.0;
         win.window().set_size(slint::LogicalSize::new(min_w, 700.0));
         settle(&win).await;
 
-        let in_toolbar: Vec<(String, f32)> =
+        let mut seen: Vec<(String, f32)> =
             testing::ElementHandle::find_by_element_id(&win, "Btn::label")
-                .filter(|e| e.absolute_position().y < 48.0)
                 .map(|e| {
                     let right = e.absolute_position().x + e.size().width;
                     (e.accessible_label().map(|s| s.to_string()).unwrap_or_default(), right)
                 })
                 .collect();
-        assert!(in_toolbar.iter().any(|(t, _)| t == "Restore default"), "{in_toolbar:?}");
-        for (text, right) in &in_toolbar {
+        seen.extend(
+            testing::ElementQuery::from_root(&win)
+                .match_inherits("ComboBox")
+                .find_all()
+                .iter()
+                .map(|e| ("a dropdown".to_string(), e.absolute_position().x + e.size().width)),
+        );
+        for want in ["Restore default", "Delete chain"] {
+            assert!(seen.iter().any(|(t, _)| t == want), "no {want:?} in {seen:?}");
+        }
+        for (text, right) in &seen {
             assert!(*right <= min_w - 8.0, "{text:?} ends at {right}, past the {min_w} window");
         }
         win.hide().unwrap();

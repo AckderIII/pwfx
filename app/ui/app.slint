@@ -492,12 +492,15 @@ export component AppWindow inherits Window {
                                 }
                                 // What the filters add, as they report it: the
                                 // sum the graph compensates for. After the width
-                                // picker, so nothing moves when it comes and goes.
+                                // picker, so nothing moves when it comes and goes,
+                                // and it gives way before Delete chain does.
                                 Text {
                                     text: root.chain-latency;
                                     font-size: Theme.fs-small;
                                     color: Theme.text-dim;
                                     vertical-alignment: center;
+                                    min-width: 0px;
+                                    overflow: elide;
                                 }
                                 Rectangle { horizontal-stretch: 1; }
                                 Btn {

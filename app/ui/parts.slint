@@ -256,7 +256,12 @@ export component NameField inherits HorizontalLayout {
     }
 
     field := LineEdit {
-        width: root.field-width;
+        // Its width when there is room, and narrower when there is not:
+        // at the window's minimum width the header row it sits in does not
+        // fit a fixed 260px beside everything else.
+        preferred-width: root.field-width;
+        max-width: root.field-width;
+        min-width: 100px;
         text: root.value;
         accepted(t) => { root.commit(t); }
         changed has-focus => {
