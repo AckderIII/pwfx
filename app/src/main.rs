@@ -555,7 +555,7 @@ impl App {
                     id: c.id.as_str().into(),
                     name: c.name.as_str().into(),
                     enabled: c.enabled,
-                    detail: chain_detail(c).into(),
+                    detail: chain_detail(c, e.chain_latency_ms(c)).into(),
                     problem: missing_plugin || missing_node,
                 }
             })
@@ -750,6 +750,7 @@ impl App {
         // --- the chain's own controls ---
         win.set_chain_name(chain.name.as_str().into());
         win.set_chain_enabled(chain.enabled);
+        win.set_chain_latency(ui::chain_latency_text(e.chain_latency_ms(chain)).into());
         let widths: Vec<String> = (1..=chain.width.max(8)).map(ui::width_label).collect();
         if m.widths_key != widths {
             win.set_width_options(strings(&widths));
@@ -1136,17 +1137,21 @@ fn plural(n: usize) -> &'static str {
     }
 }
 
-fn chain_detail(c: &Chain) -> String {
+fn chain_detail(c: &Chain, latency_ms: Option<f64>) -> String {
     let width = match c.width {
         1 => "mono".to_string(),
         2 => "stereo".to_string(),
         n => format!("{n} ch"),
     };
-    format!(
+    let mut s = format!(
         "{width} · {} filter{}",
         c.stages.len(),
         plural(c.stages.len())
-    )
+    );
+    if let Some(l) = ui::chain_latency_short(latency_ms) {
+        s += &format!(" · {l}");
+    }
+    s
 }
 
 fn bus_detail(b: &Bus) -> String {
@@ -2906,6 +2911,11 @@ mod render {
             let rt = engine.runtime_mut(node);
             rt.running = true;
             rt.curve = engine::Curve::parse(&curve_of(bin, args));
+            // the lookahead filters' default 5 ms, as they report it
+            if bin == "pw_comp" || bin == "pw_gate" {
+                rt.latency = 240;
+                rt.reported.insert("rate".into(), "48000".into());
+            }
         }
 
         let win = AppWindow::new().unwrap();

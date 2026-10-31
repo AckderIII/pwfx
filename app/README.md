@@ -93,7 +93,10 @@ See [Running without the window](#running-without-the-window).
   limiter or de-esser shows a third strip below those two, **gr**: how far it is
   pulling the level down, as a bar growing from the right over 24 dB and a figure such as
   `-14.7`. Which stages get one comes from the filter's `--help`, like
-  everything else here.
+  everything else here. A chain shows the sum of its stages' latency, in
+  its header and beside its name in the list: what its filters report,
+  which is what the graph compensates for. `pw_delay` adds none to it --
+  its delay is the effect.
 
 ## Running without the window
 

@@ -243,6 +243,21 @@ fn polyline(mut pts: impl Iterator<Item = (f64, f64)>) -> String {
     s
 }
 
+/// What a chain's header says about the latency its filters add.
+pub fn chain_latency_text(ms: Option<f64>) -> String {
+    match ms {
+        None => String::new(),
+        Some(ms) if ms < 0.05 => "no added latency".into(),
+        Some(ms) => format!("+{ms:.1} ms latency"),
+    }
+}
+
+/// The same, as the last part of a chain's line in the sidebar; nothing
+/// when there is nothing to say.
+pub fn chain_latency_short(ms: Option<f64>) -> Option<String> {
+    ms.filter(|ms| *ms >= 0.05).map(|ms| format!("{ms:.1} ms"))
+}
+
 /// Below this a reading is treated as silence. Well under anything audible,
 /// and well above the filters' own -240 floor, so a meter decaying after a
 /// signal stops still shows figures on the way down.
@@ -342,6 +357,15 @@ mod tests {
             let db = -120.0 + i as f32 * 0.1;
             assert!(level_text(db).len() <= 6, "{db} -> {}", level_text(db));
         }
+    }
+
+    #[test]
+    fn a_chains_latency_reads_as_what_it_adds() {
+        assert_eq!(chain_latency_text(None), "");
+        assert_eq!(chain_latency_text(Some(0.0)), "no added latency");
+        assert_eq!(chain_latency_text(Some(5.25)), "+5.2 ms latency");
+        assert_eq!(chain_latency_short(Some(0.0)), None);
+        assert_eq!(chain_latency_short(Some(10.0)).as_deref(), Some("10.0 ms"));
     }
 
     #[test]

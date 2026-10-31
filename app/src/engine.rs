@@ -174,6 +174,36 @@ impl Engine {
             .collect()
     }
 
+    /// The latency a chain adds, in ms: the sum of what its running stages
+    /// report, each at the rate it reports. That is what the graph is told
+    /// and compensates for, and the filter is the authority on it, as on
+    /// every other value it reports. `None` while nothing in the chain is
+    /// running, rather than a 0 that would read as a measurement.
+    ///
+    /// pw_delay reports 0 on purpose -- its delay is the effect, not
+    /// processing -- so it adds nothing here either.
+    pub fn chain_latency_ms(&self, chain: &Chain) -> Option<f64> {
+        let mut total = 0.0;
+        let mut any = false;
+        for s in &chain.stages {
+            if self.plugin(&s.plugin).is_none() {
+                continue;
+            }
+            let Some(rt) = self.runtime(&chain.node_name(s)).filter(|r| r.running) else {
+                continue;
+            };
+            let rate = rt
+                .reported
+                .get("rate")
+                .and_then(|r| r.parse::<f64>().ok())
+                .filter(|r| *r > 0.0)
+                .unwrap_or(48000.0);
+            total += rt.latency as f64 * 1000.0 / rate;
+            any = true;
+        }
+        any.then_some(total)
+    }
+
     /// The chains wired to a bus, and which way round -- `true` for a chain
     /// that sends into it. One bus can have any number of each, which is the
     /// point of having them.
@@ -835,6 +865,30 @@ mod tests {
             show(&e.desired_links()),
             ["mic:p_FL -> spk:p_FL", "mic:p_FR -> spk:p_FR"]
         );
+    }
+
+    #[test]
+    fn a_chain_adds_up_what_its_running_stages_report() {
+        let c = chain(2, &["pw_hpf", "pw_comp"]);
+        let mut e = engine(vec![c.clone()], vec![]);
+        assert_eq!(e.chain_latency_ms(&c), None, "nothing running, no figure");
+
+        let report = |e: &mut Engine, node: &str, latency: u32, rate: &str| {
+            let rt = e.runtime_mut(node);
+            rt.running = true;
+            rt.latency = latency;
+            rt.reported.insert("rate".into(), rate.into());
+        };
+        report(&mut e, "pwfx.voice.hpf", 0, "48000");
+        assert_eq!(e.chain_latency_ms(&c), Some(0.0), "running, and adding none");
+        report(&mut e, "pwfx.voice.comp", 240, "48000");
+        assert_eq!(e.chain_latency_ms(&c), Some(5.0));
+        // at the rate each stage reports, not an assumed one
+        report(&mut e, "pwfx.voice.comp", 441, "44100");
+        assert_eq!(e.chain_latency_ms(&c), Some(10.0));
+        // a stage that stopped stops counting
+        e.runtime_mut("pwfx.voice.comp").running = false;
+        assert_eq!(e.chain_latency_ms(&c), Some(0.0));
     }
 
     #[test]

@@ -101,6 +101,7 @@ export component AppWindow inherits Window {
     in property <bool> has-chain: false;
     in property <string> chain-name;
     in property <bool> chain-enabled;
+    in property <string> chain-latency;
     in property <[string]> width-options;
     in property <int> width-index;
     in property <[StageRow]> stages;
@@ -488,6 +489,15 @@ export component AppWindow inherits Window {
                                     options: root.width-options;
                                     index: root.width-index;
                                     picked(i) => { root.set-width(i); }
+                                }
+                                // What the filters add, as they report it: the
+                                // sum the graph compensates for. After the width
+                                // picker, so nothing moves when it comes and goes.
+                                Text {
+                                    text: root.chain-latency;
+                                    font-size: Theme.fs-small;
+                                    color: Theme.text-dim;
+                                    vertical-alignment: center;
                                 }
                                 Rectangle { horizontal-stretch: 1; }
                                 Btn {
