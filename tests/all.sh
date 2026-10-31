@@ -122,6 +122,10 @@ run python3 tests/delay.py bin/pw_delay
 # period of the latency -- the one an undelayed dry signal cancels -- level.
 run python3 tests/bypass.py bin/pw_comp bin/pw_gate bin/pw_limit bin/pw_deess
 
+# out-level with nothing connected to the output: the level the filter
+# produces, from its loudest channel
+run python3 tests/meter.py bin/pw_gain
+
 step "4. filters composed into a chain"
 run python3 tests/chain.py
 

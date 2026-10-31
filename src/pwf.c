@@ -76,7 +76,7 @@ static const pwf_param core_template[C_N] = {
     { .name = "out-level", .type = PWF_DOUBLE,
       .min = PWF_DB_FLOOR, .max = 60, .def = PWF_DB_FLOOR,
       .flags = PWF_F_RO, .unit = "dB",
-      .help = "peak level leaving the output ports, dBFS" },
+      .help = "peak level of the filter's output, dBFS, connected or not" },
     /* Only on filters that set gain_reduction; see core_shown(). */
     { .name = "gr", .type = PWF_DOUBLE,
       .min = 0, .max = -PWF_DB_FLOOR, .def = 0,
@@ -142,7 +142,9 @@ struct pwf {
     int    loverflow;
 
     float *zero;                    /* silence, for unconnected inputs */
-    float *sink;                    /* scratch, for unconnected outputs */
+    float *sink;                    /* scratch, for unconnected outputs: one
+                                     * PWF_MAX_QUANTUM per channel, so each
+                                     * keeps its own and out-level reads it */
 
     /* The bypass's dry signal, delayed by the latency the processed signal
      * has, for a filter that has one (pwf_desc.max_latency). Channel-major,
@@ -763,7 +765,8 @@ static void on_process(void *data, struct spa_io_position *position)
 
         for (i = 0; i < nch; i++) {
             in[i]  = base_in[i]  ? base_in[i]  + done : s->zero;
-            out[i] = base_out[i] ? base_out[i] + done : s->sink;
+            out[i] = base_out[i] ? base_out[i] + done
+                                 : s->sink + (size_t)i * PWF_MAX_QUANTUM;
         }
 
         /* Every slice goes into the bypass's dry delay, bypassed or not, so
@@ -779,10 +782,8 @@ static void on_process(void *data, struct spa_io_position *position)
             }
         }
 
-        /* An unconnected port reads from the shared silence buffer and an
-         * unconnected output is discarded into the shared scratch, so the
-         * meters look at base_*[] to tell a real port from a stand-in --
-         * metering the scratch would report audio nobody receives. */
+        /* An unconnected input reads from the shared silence buffer, which
+         * is not a level anyone sent, so in-level skips it. */
         if (meter) {
             for (i = 0; i < nch; i++) {
                 if (!base_in[i]) continue;
@@ -832,11 +833,14 @@ static void on_process(void *data, struct spa_io_position *position)
             s->rt_mix = mix;
         }
 
-        /* Measured after the crossfade, so out-level is the signal that
-         * actually leaves the node and bypass shows through it. */
+        /* Measured after the crossfade, so out-level is what the filter
+         * produces, bypass included -- whether or not anything is connected
+         * to hear it. A stage being set up before its output is wired, or
+         * the last stage of a chain with no output chosen, still shows what
+         * it is doing; an unconnected output has its own scratch per
+         * channel for exactly that. */
         if (meter) {
             for (i = 0; i < nch; i++) {
-                if (!base_out[i]) continue;
                 for (j = 0; j < n; j++) {
                     float a = fabsf(out[i][j]);
                     if (a > opk) opk = a;
@@ -1190,7 +1194,7 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
 
     s.slots = calloc(PWF_SLOTS, desc->coeff_size);
     s.zero  = calloc(PWF_MAX_QUANTUM, sizeof *s.zero);
-    s.sink  = calloc(PWF_MAX_QUANTUM, sizeof *s.sink);
+    s.sink  = calloc((size_t)PWF_MAX_QUANTUM * s.channels, sizeof *s.sink);
     if (!s.slots || !s.zero || !s.sink) {
         err("out of memory");
         rc = 1;

@@ -76,7 +76,9 @@ relaxed store per block. The level is carried as float bits in an
 `_Atomic uint32_t`, not an `_Atomic double`, because 8-byte atomics are not
 lock-free on every target and nothing in `process()` may take a lock. The peak
 is held in dB so the fallback is a subtraction proportional to the block length
-and the only transcendental is one `log10` per block.
+and the only transcendental is one `log10` per block. `out-level` is what the
+filter produces, connected or not: an unconnected output writes into its own
+per-channel scratch, which is metered like a real port (`tests/meter.py`).
 
 Gain reduction rides the same path. A filter opts in by setting
 `pwf_desc.gain_reduction`, which the framework calls after every `process()`;

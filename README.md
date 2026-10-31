@@ -124,8 +124,10 @@ value from when it was on — or -240 if it never was.
 
 A reading is a peak hold that falls back at 20 dB/s, so a single one can sit
 under the true peak; the highest over a run is the one to trust. `out-level`
-is measured after the bypass crossfade, so it is what actually leaves the
-node.
+is measured after the bypass crossfade, so it is what the filter produces,
+bypass included -- and it is measured whether or not anything is connected
+to the output, so a stage being set up before it is wired still shows what
+it is doing.
 
 On the lookahead filters `out-level` lags `in-level` by the lookahead, so the
 two are not the same instant of audio — don't subtract them to get gain
@@ -225,7 +227,7 @@ Every filter has these on top of its own:
 | `latency` | samples of latency this filter adds, reported to the graph (read-only) |
 | `bypass` | pass the input through, crossfaded over 10 ms so it cannot click; a filter with latency keeps it, so bypassing does not move the audio in time |
 | `meter` | how often to report `in-level`, `out-level` and `gr`, in ms; 0 (the default) is off |
-| `in-level`, `out-level` | peak level at the input and output ports in dBFS, floored at -240 (read-only) |
+| `in-level`, `out-level` | peak level at the input ports, and of the filter's output whether connected or not, in dBFS, floored at -240 (read-only) |
 | `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_limit` and `pw_deess` only (read-only) |
 | `max-rate` | the highest rate delay lines are sized for at startup (command line only) |
 | `node-name`, `target`, `node-latency` | PipeWire plumbing (command line only) |
@@ -347,6 +349,8 @@ tests/delay.py     pw_delay in the graph: the delay exact to the sample,
                    none of it reported as latency, no click on a change
 tests/bypass.py    bypassing a lookahead filter keeps its timing, and its
                    crossfade does not comb the signal with itself
+tests/meter.py     out-level with the output connected to nothing: the
+                   right level, from the loudest channel
 tests/live.py      one filter in the real graph: node and ports, live
                    parameter changes, reported latency, and the measured
                    frequency response of audio played through it
