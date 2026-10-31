@@ -61,6 +61,7 @@ component EndpointCard inherits Card {
 }
 
 export component AppWindow inherits Window {
+    forward-focus: keys;
     title: "pwfx — PipeWire filter chains";
     preferred-width: 1180px;
     preferred-height: 780px;
@@ -178,393 +179,442 @@ export component AppWindow inherits Window {
     callback load-preset(int);
     callback delete-preset(int);
     callback rescan();
+    callback undo();
+    callback redo();
+    in property <bool> can-undo: false;
+    in property <bool> can-redo: false;
 
-    VerticalLayout {
-        // ============================ toolbar ============================
-        Rectangle {
-            height: Theme.bar;
-            background: Theme.bg-raised;
-            HorizontalLayout {
-                padding-left: Theme.pad;
-                padding-right: Theme.pad;
-                // What centres the row. A child with a height of its own is
-                // placed at the top of the space a layout gives it, not in
-                // the middle of it, so a 32px control in a 48px bar would sit
-                // against the top edge while the text fields stretched to the
-                // full height beside it. Making the content box exactly one
-                // control tall takes the question away.
-                padding-top: (Theme.bar - Theme.control) / 2;
-                padding-bottom: (Theme.bar - Theme.control) / 2;
-                spacing: Theme.gap;
-
-                Text {
-                    text: "pwfx";
-                    font-size: 17px;
-                    font-weight: 700;
-                    color: Theme.accent;
-                    vertical-alignment: center;
+    // Undo and redo from the keyboard. A key goes to the focused element
+    // first and only comes here if that element does not want it, so a text
+    // field keeps Ctrl+Z for its own typing and everything else falls through
+    // to the app. forward-focus below gives this scope the focus at start, so
+    // the shortcuts work before anything has been clicked.
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && !event.modifiers.alt) {
+                if (event.text == "z" && !event.modifiers.shift) {
+                    root.undo();
+                    return accept;
                 }
-                // The one thing in the toolbar that can go: at the
-                // window's narrowest it gives up its room rather than
-                // pushing the buttons off the right-hand edge.
-                Text {
-                    text: "PipeWire filter chains";
-                    font-size: Theme.fs-small;
-                    color: Theme.text-faint;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    min-width: 0px;
-                    // all of it or none: an ellipsis on its own beside
-                    // the name looks like a mistake
-                    visible: self.width >= self.preferred-width;
-                }
-
-                Text {
-                    text: "meters";
-                    font-size: Theme.fs-small;
-                    color: Theme.text-dim;
-                    vertical-alignment: center;
-                }
-                VerticalLayout {
-                    alignment: center;
-                    Toggle {
-                        checked: root.metering;
-                        on-color: Theme.accent;
-                        toggled(v) => { root.set-metering(v); }
-                    }
-                }
-
-                Rectangle { width: 4px; }
-
-                LineEdit {
-                    min-width: 80px;
-                    preferred-width: 130px;
-                    placeholder-text: "preset name";
-                    text: root.preset-name;
-                    edited(t) => { root.preset-name = t; }
-                    accepted(t) => { root.save-preset(t); root.preset-name = ""; }
-                }
-                Btn {
-                    height: Theme.control;
-                    text: "Save";
-                    enabled: root.preset-name != "";
-                    clicked => { root.save-preset(root.preset-name); root.preset-name = ""; }
-                }
-                Picker {
-                    width: 130px;
-                    options: root.presets;
-                    index: root.preset-index;
-                    picked(i) => { root.preset-index = i; }
-                }
-                Btn {
-                    height: Theme.control;
-                    text: "Load";
-                    enabled: root.preset-index >= 0;
-                    clicked => { root.load-preset(root.preset-index); }
-                }
-                Btn {
-                    height: Theme.control;
-                    text: "Delete";
-                    danger: true;
-                    enabled: root.preset-index >= 0;
-                    clicked => { root.delete-preset(root.preset-index); }
-                }
-
-                Rectangle { width: 1px; background: Theme.line; }
-
-                Btn {
-                    height: Theme.control;
-                    text: "Set default";
-                    clicked => { root.save-default(); }
-                }
-                Btn {
-                    height: Theme.control;
-                    text: "Restore default";
-                    primary: true;
-                    clicked => { root.restore-default(); }
+                if (event.text == "Z" || (event.text == "z" && event.modifiers.shift)
+                        || event.text == "y") {
+                    root.redo();
+                    return accept;
                 }
             }
+            return reject;
         }
-        Rectangle { height: 1px; background: Theme.line; }
 
-        // ============================ body ===============================
-        HorizontalLayout {
-            vertical-stretch: 1;
-
-            // ------------------ chain and bus lists ---------------------
+        VerticalLayout {
+            // ============================ toolbar ============================
             Rectangle {
-                width: 246px;
+                height: Theme.bar;
                 background: Theme.bg-raised;
-                VerticalLayout {
-                    padding: Theme.pad;
+                HorizontalLayout {
+                    padding-left: Theme.pad;
+                    padding-right: Theme.pad;
+                    // What centres the row. A child with a height of its own is
+                    // placed at the top of the space a layout gives it, not in
+                    // the middle of it, so a 32px control in a 48px bar would sit
+                    // against the top edge while the text fields stretched to the
+                    // full height beside it. Making the content box exactly one
+                    // control tall takes the question away.
+                    padding-top: (Theme.bar - Theme.control) / 2;
+                    padding-bottom: (Theme.bar - Theme.control) / 2;
                     spacing: Theme.gap;
 
-                    HorizontalLayout {
-                        SectionLabel { text: "CHAINS"; horizontal-stretch: 1; vertical-alignment: center; }
-                        Btn { text: "+ New"; primary: true; clicked => { root.add-chain(); } }
+                    Text {
+                        text: "pwfx";
+                        font-size: 17px;
+                        font-weight: 700;
+                        color: Theme.accent;
+                        vertical-alignment: center;
+                    }
+                    // The one thing in the toolbar that can go: at the
+                    // window's narrowest it gives up its room rather than
+                    // pushing the buttons off the right-hand edge.
+                    Text {
+                        text: "PipeWire filter chains";
+                        font-size: Theme.fs-small;
+                        color: Theme.text-faint;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        // all of it or none: an ellipsis on its own beside
+                        // the name looks like a mistake
+                        visible: self.width >= self.preferred-width;
                     }
 
-                    ScrollView {
-                        // Twice the share of the buses, because a chain is
-                        // the thing being worked on and a bus is where it
-                        // ends up. Both still scroll on their own.
-                        vertical-stretch: 2;
-                        VerticalLayout {
-                            spacing: 4px;
-                            alignment: start;
-                            for c[i] in root.chains : SideRow {
-                                name: c.name;
-                                detail: c.detail;
-                                enabled: c.enabled;
-                                problem: c.problem;
-                                current: i == root.selected;
-                                clicked => { root.select-chain(i); }
-                            }
-                            if root.chains.length == 0 : Text {
-                                text: "No chains yet.\n\nA chain is a source, a row of filters and a sink. Press “New” to make one.";
-                                font-size: Theme.fs-small;
-                                color: Theme.text-faint;
-                                wrap: word-wrap;
-                            }
+                    // Icons, to keep the toolbar inside the window at its
+                    // minimum width; Ctrl+Z and Ctrl+Shift+Z do the same.
+                    Btn {
+                        height: Theme.control;
+                        width: Theme.control;
+                        text: "↶";
+                        accessible-role: button;
+                        accessible-label: "Undo";
+                        enabled: root.can-undo;
+                        clicked => { root.undo(); }
+                    }
+                    Btn {
+                        height: Theme.control;
+                        width: Theme.control;
+                        text: "↷";
+                        accessible-role: button;
+                        accessible-label: "Redo";
+                        enabled: root.can-redo;
+                        clicked => { root.redo(); }
+                    }
+
+                    Rectangle { width: 4px; }
+
+                    Text {
+                        text: "meters";
+                        font-size: Theme.fs-small;
+                        color: Theme.text-dim;
+                        vertical-alignment: center;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Toggle {
+                            checked: root.metering;
+                            on-color: Theme.accent;
+                            toggled(v) => { root.set-metering(v); }
                         }
                     }
 
-                    Rectangle { height: 1px; background: Theme.line; }
+                    Rectangle { width: 4px; }
 
-                    HorizontalLayout {
-                        SectionLabel { text: "BUSES"; horizontal-stretch: 1; vertical-alignment: center; }
-                        Btn { text: "+ New"; primary: true; clicked => { root.add-bus(); } }
+                    LineEdit {
+                        min-width: 80px;
+                        preferred-width: 130px;
+                        placeholder-text: "preset name";
+                        text: root.preset-name;
+                        edited(t) => { root.preset-name = t; }
+                        accepted(t) => { root.save-preset(t); root.preset-name = ""; }
+                    }
+                    Btn {
+                        height: Theme.control;
+                        text: "Save";
+                        enabled: root.preset-name != "";
+                        clicked => { root.save-preset(root.preset-name); root.preset-name = ""; }
+                    }
+                    Picker {
+                        width: 130px;
+                        options: root.presets;
+                        index: root.preset-index;
+                        picked(i) => { root.preset-index = i; }
+                    }
+                    Btn {
+                        height: Theme.control;
+                        text: "Load";
+                        enabled: root.preset-index >= 0;
+                        clicked => { root.load-preset(root.preset-index); }
+                    }
+                    Btn {
+                        height: Theme.control;
+                        text: "Delete";
+                        danger: true;
+                        enabled: root.preset-index >= 0;
+                        clicked => { root.delete-preset(root.preset-index); }
                     }
 
-                    ScrollView {
-                        vertical-stretch: 1;
-                        VerticalLayout {
-                            spacing: 4px;
-                            alignment: start;
-                            for b[i] in root.buses : SideRow {
-                                name: b.name;
-                                detail: b.detail;
-                                enabled: b.enabled;
-                                problem: b.problem;
-                                current: i == root.bus-selected;
-                                clicked => { root.select-bus(i); }
-                            }
-                            if root.buses.length == 0 : Text {
-                                text: "A bus is a virtual device other applications can use. Chains feed it or take from it.";
-                                font-size: Theme.fs-small;
-                                color: Theme.text-faint;
-                                wrap: word-wrap;
-                            }
-                        }
+                    Rectangle { width: 1px; background: Theme.line; }
+
+                    Btn {
+                        height: Theme.control;
+                        text: "Set default";
+                        clicked => { root.save-default(); }
+                    }
+                    Btn {
+                        height: Theme.control;
+                        text: "Restore default";
+                        primary: true;
+                        clicked => { root.restore-default(); }
                     }
                 }
             }
-            Rectangle { width: 1px; background: Theme.line; }
+            Rectangle { height: 1px; background: Theme.line; }
 
-            // ---------------------- chain detail ------------------------
-            Rectangle {
-                horizontal-stretch: 1;
-                background: Theme.bg;
+            // ============================ body ===============================
+            HorizontalLayout {
+                vertical-stretch: 1;
 
-                if !root.has-chain && !root.has-bus : Text {
-                    text: "Select a chain or a bus on the left, or make a new one.";
-                    color: Theme.text-faint;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    width: 100%;
-                    height: 100%;
-                }
-
-                if root.has-bus : ScrollView {
-                    BusPane {
-                        name: root.bus-name;
-                        enabled: root.bus-enabled;
-                        kind-options: root.bus-kind-options;
-                        kind-index: root.bus-kind-index;
-                        width-options: root.bus-width-options;
-                        width-index: root.bus-width-index;
-                        node-name: root.bus-node-name;
-                        explain: root.bus-explain;
-                        status: root.bus-status;
-                        live: root.bus-live;
-                        uses: root.bus-uses;
-                        apps-heading: root.bus-apps-heading;
-                        apps-hint: root.bus-apps-hint;
-                        apps: root.bus-apps;
-                        app-options: root.bus-app-options;
-                        app-index: root.bus-app-index;
-                        pick-app(i) => { root.pick-bus-app(i); }
-                        add-app => { root.add-bus-app(); }
-                        remove-app(i) => { root.remove-bus-app(i); }
-                        rename(t) => { root.rename-bus(t); }
-                        set-enabled(v) => { root.set-bus-enabled(v); }
-                        set-kind(i) => { root.set-bus-kind(i); }
-                        set-width(i) => { root.set-bus-width(i); }
-                        remove => { root.remove-bus(); }
-                    }
-                }
-
-                if root.has-chain : ScrollView {
+                // ------------------ chain and bus lists ---------------------
+                Rectangle {
+                    width: 246px;
+                    background: Theme.bg-raised;
                     VerticalLayout {
                         padding: Theme.pad;
                         spacing: Theme.gap;
-                        alignment: start;
-
-                        // chain header
-                        HorizontalLayout {
-                            spacing: Theme.gap;
-                            // Same as the parameter fields: a name typed and
-                            // then clicked away has still been typed.
-                            NameField {
-                                value: root.chain-name;
-                                commit(t) => { root.rename-chain(t); }
-                            }
-                            Toggle {
-                                y: 5px;
-                                checked: root.chain-enabled;
-                                toggled(v) => { root.set-chain-enabled(v); }
-                            }
-                            Text {
-                                text: root.chain-enabled ? "running" : "stopped";
-                                font-size: Theme.fs-small;
-                                color: root.chain-enabled ? Theme.good : Theme.text-faint;
-                                vertical-alignment: center;
-                                width: 60px;
-                            }
-                            Picker {
-                                // Wide enough for "Stereo (2 channels)",
-                                // which is the longest `width_label` produces
-                                // -- everything above two is "N channels".
-                                width: 190px;
-                                options: root.width-options;
-                                index: root.width-index;
-                                picked(i) => { root.set-width(i); }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                            Btn {
-                                text: "Delete chain";
-                                danger: true;
-                                clicked => { root.remove-chain(); }
-                            }
-                        }
-
-                        EndpointCard {
-                            heading: "INPUT — take audio from";
-                            options: root.source-options;
-                            index: root.source-index;
-                            detail: root.source-detail;
-                            mapped: root.source-mapped;
-                            selected(i) => { root.set-source(i); }
-                            edit-map => { root.open-map(true); }
-                        }
-
-                        for s[i] in root.stages : StageCard {
-                            s: s;
-                            index: i;
-                            count: root.stages.length;
-                            metering: root.metering;
-                            level: root.levels[i];
-                            curve: root.curves[i];
-                            set-bypass(v) => { root.set-bypass(i, v); }
-                            remove => { root.remove-stage(i); }
-                            move(d) => { root.move-stage(i, d); }
-                            slide(n, v) => { root.param-slide(i, n, v); }
-                            commit(n, t) => { root.param-commit(i, n, t); }
-                            pick(n, c) => { root.param-pick(i, n, c); }
-                            toggle(n, v) => { root.param-toggle(i, n, v); }
-                        }
 
                         HorizontalLayout {
-                            spacing: Theme.gap;
-                            Picker {
-                                // Takes the row rather than a width chosen
-                                // here: what is in it is `name — summary` for
-                                // whatever filters are on disk, and the
-                                // longest of the six that ship is already 63
-                                // characters. A fixed width would only be
-                                // right until someone adds a seventh.
-                                horizontal-stretch: 1;
-                                options: root.plugin-options;
-                                index: root.plugin-index;
-                                picked(i) => { root.plugin-index = i; }
-                            }
-                            Btn {
-                                text: "+ Add filter";
-                                primary: true;
-                                enabled: root.plugin-options.length > 0;
-                                clicked => { root.add-stage(); }
-                            }
-                            Btn {
-                                text: "Rescan";
-                                clicked => { root.rescan(); }
+                            SectionLabel { text: "CHAINS"; horizontal-stretch: 1; vertical-alignment: center; }
+                            Btn { text: "+ New"; primary: true; clicked => { root.add-chain(); } }
+                        }
+
+                        ScrollView {
+                            // Twice the share of the buses, because a chain is
+                            // the thing being worked on and a bus is where it
+                            // ends up. Both still scroll on their own.
+                            vertical-stretch: 2;
+                            VerticalLayout {
+                                spacing: 4px;
+                                alignment: start;
+                                for c[i] in root.chains : SideRow {
+                                    name: c.name;
+                                    detail: c.detail;
+                                    enabled: c.enabled;
+                                    problem: c.problem;
+                                    current: i == root.selected;
+                                    clicked => { root.select-chain(i); }
+                                }
+                                if root.chains.length == 0 : Text {
+                                    text: "No chains yet.\n\nA chain is a source, a row of filters and a sink. Press “New” to make one.";
+                                    font-size: Theme.fs-small;
+                                    color: Theme.text-faint;
+                                    wrap: word-wrap;
+                                }
                             }
                         }
 
-                        EndpointCard {
-                            heading: "OUTPUT — send audio to";
-                            options: root.sink-options;
-                            index: root.sink-index;
-                            detail: root.sink-detail;
-                            mapped: root.sink-mapped;
-                            selected(i) => { root.set-sink(i); }
-                            edit-map => { root.open-map(false); }
+                        Rectangle { height: 1px; background: Theme.line; }
+
+                        HorizontalLayout {
+                            SectionLabel { text: "BUSES"; horizontal-stretch: 1; vertical-alignment: center; }
+                            Btn { text: "+ New"; primary: true; clicked => { root.add-bus(); } }
+                        }
+
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                spacing: 4px;
+                                alignment: start;
+                                for b[i] in root.buses : SideRow {
+                                    name: b.name;
+                                    detail: b.detail;
+                                    enabled: b.enabled;
+                                    problem: b.problem;
+                                    current: i == root.bus-selected;
+                                    clicked => { root.select-bus(i); }
+                                }
+                                if root.buses.length == 0 : Text {
+                                    text: "A bus is a virtual device other applications can use. Chains feed it or take from it.";
+                                    font-size: Theme.fs-small;
+                                    color: Theme.text-faint;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+                Rectangle { width: 1px; background: Theme.line; }
+
+                // ---------------------- chain detail ------------------------
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: Theme.bg;
+
+                    if !root.has-chain && !root.has-bus : Text {
+                        text: "Select a chain or a bus on the left, or make a new one.";
+                        color: Theme.text-faint;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    if root.has-bus : ScrollView {
+                        BusPane {
+                            name: root.bus-name;
+                            enabled: root.bus-enabled;
+                            kind-options: root.bus-kind-options;
+                            kind-index: root.bus-kind-index;
+                            width-options: root.bus-width-options;
+                            width-index: root.bus-width-index;
+                            node-name: root.bus-node-name;
+                            explain: root.bus-explain;
+                            status: root.bus-status;
+                            live: root.bus-live;
+                            uses: root.bus-uses;
+                            apps-heading: root.bus-apps-heading;
+                            apps-hint: root.bus-apps-hint;
+                            apps: root.bus-apps;
+                            app-options: root.bus-app-options;
+                            app-index: root.bus-app-index;
+                            pick-app(i) => { root.pick-bus-app(i); }
+                            add-app => { root.add-bus-app(); }
+                            remove-app(i) => { root.remove-bus-app(i); }
+                            rename(t) => { root.rename-bus(t); }
+                            set-enabled(v) => { root.set-bus-enabled(v); }
+                            set-kind(i) => { root.set-bus-kind(i); }
+                            set-width(i) => { root.set-bus-width(i); }
+                            remove => { root.remove-bus(); }
+                        }
+                    }
+
+                    if root.has-chain : ScrollView {
+                        VerticalLayout {
+                            padding: Theme.pad;
+                            spacing: Theme.gap;
+                            alignment: start;
+
+                            // chain header
+                            HorizontalLayout {
+                                spacing: Theme.gap;
+                                // Same as the parameter fields: a name typed and
+                                // then clicked away has still been typed.
+                                NameField {
+                                    value: root.chain-name;
+                                    commit(t) => { root.rename-chain(t); }
+                                }
+                                Toggle {
+                                    y: 5px;
+                                    checked: root.chain-enabled;
+                                    toggled(v) => { root.set-chain-enabled(v); }
+                                }
+                                Text {
+                                    text: root.chain-enabled ? "running" : "stopped";
+                                    font-size: Theme.fs-small;
+                                    color: root.chain-enabled ? Theme.good : Theme.text-faint;
+                                    vertical-alignment: center;
+                                    width: 60px;
+                                }
+                                Picker {
+                                    // Wide enough for "Stereo (2 channels)",
+                                    // which is the longest `width_label` produces
+                                    // -- everything above two is "N channels".
+                                    width: 190px;
+                                    options: root.width-options;
+                                    index: root.width-index;
+                                    picked(i) => { root.set-width(i); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                Btn {
+                                    text: "Delete chain";
+                                    danger: true;
+                                    clicked => { root.remove-chain(); }
+                                }
+                            }
+
+                            EndpointCard {
+                                heading: "INPUT — take audio from";
+                                options: root.source-options;
+                                index: root.source-index;
+                                detail: root.source-detail;
+                                mapped: root.source-mapped;
+                                selected(i) => { root.set-source(i); }
+                                edit-map => { root.open-map(true); }
+                            }
+
+                            for s[i] in root.stages : StageCard {
+                                s: s;
+                                index: i;
+                                count: root.stages.length;
+                                metering: root.metering;
+                                level: root.levels[i];
+                                curve: root.curves[i];
+                                set-bypass(v) => { root.set-bypass(i, v); }
+                                remove => { root.remove-stage(i); }
+                                move(d) => { root.move-stage(i, d); }
+                                slide(n, v) => { root.param-slide(i, n, v); }
+                                commit(n, t) => { root.param-commit(i, n, t); }
+                                pick(n, c) => { root.param-pick(i, n, c); }
+                                toggle(n, v) => { root.param-toggle(i, n, v); }
+                            }
+
+                            HorizontalLayout {
+                                spacing: Theme.gap;
+                                Picker {
+                                    // Takes the row rather than a width chosen
+                                    // here: what is in it is `name — summary` for
+                                    // whatever filters are on disk, and the
+                                    // longest of the six that ship is already 63
+                                    // characters. A fixed width would only be
+                                    // right until someone adds a seventh.
+                                    horizontal-stretch: 1;
+                                    options: root.plugin-options;
+                                    index: root.plugin-index;
+                                    picked(i) => { root.plugin-index = i; }
+                                }
+                                Btn {
+                                    text: "+ Add filter";
+                                    primary: true;
+                                    enabled: root.plugin-options.length > 0;
+                                    clicked => { root.add-stage(); }
+                                }
+                                Btn {
+                                    text: "Rescan";
+                                    clicked => { root.rescan(); }
+                                }
+                            }
+
+                            EndpointCard {
+                                heading: "OUTPUT — send audio to";
+                                options: root.sink-options;
+                                index: root.sink-index;
+                                detail: root.sink-detail;
+                                mapped: root.sink-mapped;
+                                selected(i) => { root.set-sink(i); }
+                                edit-map => { root.open-map(false); }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // ============================ log ================================
-        if root.log-open : Rectangle {
-            height: 150px;
-            background: Theme.bg-sunken;
-            border-width: 1px;
-            border-color: Theme.line;
-            ScrollView {
-                VerticalLayout {
-                    padding: 6px;
-                    alignment: start;
-                    for l in root.log : Text {
-                        text: l;
-                        font-family: "monospace";
+            // ============================ log ================================
+            if root.log-open : Rectangle {
+                height: 150px;
+                background: Theme.bg-sunken;
+                border-width: 1px;
+                border-color: Theme.line;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 6px;
+                        alignment: start;
+                        for l in root.log : Text {
+                            text: l;
+                            font-family: "monospace";
+                            font-size: Theme.fs-small;
+                            color: Theme.text-dim;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+
+            // ============================ status =============================
+            Rectangle {
+                height: Theme.statusbar;
+                background: Theme.bg-raised;
+                HorizontalLayout {
+                    padding-left: Theme.pad;
+                    padding-right: Theme.pad;
+                    padding-top: 2px;
+                    padding-bottom: 2px;
+                    spacing: Theme.gap;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        y: 9px;
+                        border-radius: 4px;
+                        background: root.status-bad ? Theme.bad : Theme.good;
+                    }
+                    Text {
+                        text: root.status;
                         font-size: Theme.fs-small;
                         color: Theme.text-dim;
-                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
                     }
-                }
-            }
-        }
-
-        // ============================ status =============================
-        Rectangle {
-            height: Theme.statusbar;
-            background: Theme.bg-raised;
-            HorizontalLayout {
-                padding-left: Theme.pad;
-                padding-right: Theme.pad;
-                padding-top: 2px;
-                padding-bottom: 2px;
-                spacing: Theme.gap;
-                Rectangle {
-                    width: 7px;
-                    height: 7px;
-                    y: 9px;
-                    border-radius: 4px;
-                    background: root.status-bad ? Theme.bad : Theme.good;
-                }
-                Text {
-                    text: root.status;
-                    font-size: Theme.fs-small;
-                    color: Theme.text-dim;
-                    vertical-alignment: center;
-                    horizontal-stretch: 1;
-                    overflow: elide;
-                }
-                Btn {
-                    height: Theme.statusbar - 4px;
-                    text: root.log-open ? "Hide log" : (root.log-errors > 0 ? "Log ⚠" : "Log");
-                    danger: root.log-errors > 0 && !root.log-open;
-                    clicked => { root.log-open = !root.log-open; }
+                    Btn {
+                        height: Theme.statusbar - 4px;
+                        text: root.log-open ? "Hide log" : (root.log-errors > 0 ? "Log ⚠" : "Log");
+                        danger: root.log-errors > 0 && !root.log-open;
+                        clicked => { root.log-open = !root.log-open; }
+                    }
                 }
             }
         }

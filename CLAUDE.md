@@ -245,6 +245,18 @@ from it, not adding an action that does something. `PwCmd::SetNodes` is
 `SetLinks` one level up: the complete set of nodes that ought to exist, not a
 create or a destroy.
 
+**Undo is a stack of earlier `AppState`s** (`app/src/history.rs`). Every edit
+goes through `App::edit`, which compares the state before and after and
+records a step only if it changed; `history::describe` names the step and
+gives it a merge key -- `Some` only for a change to exactly one parameter, so
+a slider drag folds into one step. Labels come from that comparison, not from
+the call site, so a new kind of edit is undoable with a sensible name and no
+change there; only an edit that replaces the whole state (`load_from`) names
+itself through `edit_as`. Two things are kept out on purpose: `meters`, a
+display preference (an undo keeps the current setting), and values a filter
+reported back through `absorb_reports`, which never go through `edit`. Keep
+it that way: an edit made around `edit` is an edit that cannot be undone.
+
 **The window is optional.** `pwfx --headless` (`app/src/headless.rs`) runs
 the same engine and PipeWire thread from a plain loop; `boot`, `apply` and
 `stop` in `main.rs` are shared by both, so anything the engine needs on every

@@ -26,6 +26,7 @@
 mod engine;
 mod graph;
 mod headless;
+mod history;
 mod plugin;
 mod process;
 mod pwthread;
@@ -110,6 +111,7 @@ struct App {
     /// refresh shows the current figure rather than the one from whenever a
     /// link last moved.
     links: Rc<Cell<(usize, usize)>>,
+    history: Rc<RefCell<history::History>>,
 }
 
 const USAGE: &str = "\
@@ -291,6 +293,7 @@ fn window() {
         dirty: Rc::new(Cell::new(false)),
         models: Rc::new(RefCell::new(Models::default())),
         links: Rc::new(Cell::new((0, 0))),
+        history: Rc::new(RefCell::new(history::History::default())),
     };
 
     app.wire(&win);
@@ -413,9 +416,59 @@ impl App {
     }
 
     /// Every edit goes through here: change the state, then let the engine
-    /// work out what that means.
+    /// work out what that means. Whatever the edit changed becomes a step
+    /// that can be undone, named by what changed (see `history::describe`).
     fn edit(&self, f: impl FnOnce(&mut Engine, &mut View)) {
+        self.edit_as(None, f);
+    }
+
+    /// The same, with the step's name given rather than worked out -- for
+    /// an edit that replaces the whole state, where the difference says
+    /// nothing useful about why.
+    fn edit_as(&self, label: Option<String>, f: impl FnOnce(&mut Engine, &mut View)) {
+        let before = self.engine.borrow().state.clone();
         f(&mut self.engine.borrow_mut(), &mut self.view.borrow_mut());
+        {
+            let e = self.engine.borrow();
+            if history::differs(&before, &e.state) {
+                let (auto, key) = history::describe(&before, &e.state);
+                self.history.borrow_mut().record(
+                    before,
+                    label.unwrap_or(auto),
+                    key,
+                    std::time::Instant::now(),
+                );
+            }
+        }
+        self.dirty.set(true);
+        self.apply();
+        self.refresh();
+    }
+
+    /// Step back, or forward. The state put back is applied like any other,
+    /// so the reconcile loops restart only what the step actually moved.
+    /// The meters stay as they are now: they are how the window looks, not
+    /// part of what was edited.
+    fn step(&self, forward: bool) {
+        let current = self.engine.borrow().state.clone();
+        let meters = current.meters;
+        let got = if forward {
+            self.history.borrow_mut().redo(current)
+        } else {
+            self.history.borrow_mut().undo(current)
+        };
+        let Some((mut st, label)) = got else { return };
+        st.meters = meters;
+        {
+            let mut e = self.engine.borrow_mut();
+            let mut v = self.view.borrow_mut();
+            // What was selected may be what the step took away.
+            v.selected = v.selected.min(st.chains.len().saturating_sub(1));
+            v.selected_bus = v.selected_bus.min(st.buses.len().saturating_sub(1));
+            v.map = None;
+            e.state = st;
+            e.note(format!("{}: {label}", if forward { "redid" } else { "undid" }), false);
+        }
         self.dirty.set(true);
         self.apply();
         self.refresh();
@@ -661,6 +714,8 @@ impl App {
         }
         win.set_metering(e.state.meters);
         win.set_status(self.status_text(&e).into());
+        win.set_can_undo(self.history.borrow().can_undo());
+        win.set_can_redo(self.history.borrow().can_redo());
         win.set_status_bad(!e.graph.connected || {
             let (wanted, made) = self.links.get();
             made < wanted
@@ -1709,6 +1764,13 @@ impl App {
             app.edit(move |e, _| e.state.meters = on);
         });
 
+        on!(on_undo, |app| {
+            app.step(false);
+        });
+        on!(on_redo, |app| {
+            app.step(true);
+        });
+
         on!(on_rescan, |app| {
             app.edit(|e, _| {
                 let dirs = plugin::search_path();
@@ -1852,7 +1914,15 @@ impl App {
     fn load_from(&self, path: &std::path::Path) {
         match state::read(path) {
             Ok(loaded) => {
-                self.edit(move |e, v| {
+                let label = if path == state::default_path() {
+                    "restore the default".to_string()
+                } else {
+                    format!(
+                        "load {}",
+                        path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default()
+                    )
+                };
+                self.edit_as(Some(label), move |e, v| {
                     e.state = loaded;
                     v.selected = 0;
                     v.selected_bus = 0;
@@ -2125,6 +2195,7 @@ mod window_tests {
             the_refusal_dialog_wraps_and_closes().await;
             a_gr_strip_shows_only_where_there_is_a_reduction().await;
             a_refresh_leaves_lists_that_did_not_change_alone().await;
+            undo_and_redo_from_the_keyboard().await;
             slint::quit_event_loop().unwrap();
         })
         .unwrap();
@@ -2362,6 +2433,7 @@ mod window_tests {
             dirty: Rc::new(Cell::new(false)),
             models: Rc::new(RefCell::new(Models::default())),
             links: Rc::new(Cell::new((0, 0))),
+            history: Rc::new(RefCell::new(history::History::default())),
         };
 
         app.refresh();
@@ -2386,6 +2458,100 @@ mod window_tests {
         let widths = win.get_width_options();
         app.refresh();
         assert!(win.get_width_options() == widths, "the chain width list was replaced");
+    }
+
+    fn keys(win: &AppWindow, combo: &[&str]) {
+        use slint::platform::{Key, WindowEvent};
+        let name = |k: &str| -> SharedString {
+            match k {
+                "ctrl" => Key::Control.into(),
+                "shift" => Key::Shift.into(),
+                other => other.into(),
+            }
+        };
+        for k in combo {
+            win.window().dispatch_event(WindowEvent::KeyPressed { text: name(k) });
+        }
+        for k in combo.iter().rev() {
+            win.window().dispatch_event(WindowEvent::KeyReleased { text: name(k) });
+        }
+    }
+
+    /// Undo and redo through the window as a user drives it: an edit made
+    /// by the window's own callback, Ctrl+Z and Ctrl+Shift+Z as key events,
+    /// a slider dragged through forty positions that comes back in one step,
+    /// and a text field that keeps Ctrl+Z for itself while it has focus.
+    async fn undo_and_redo_from_the_keyboard() {
+        let (plugins, _) = plugin::discover(&[std::path::PathBuf::from("../bin")]);
+        if !plugins.iter().any(|p| p.name == "pw_comp") {
+            eprintln!("no pw_comp built; skipping the undo window test");
+            return;
+        }
+        let mut st = state::AppState::default();
+        st.chains.push(Chain {
+            id: "voice".into(),
+            name: "Voice".into(),
+            enabled: true,
+            width: 2,
+            stages: vec![Stage {
+                id: "comp".into(),
+                plugin: "pw_comp".into(),
+                bypass: false,
+                params: [("ratio".to_string(), "3".to_string())].into_iter().collect(),
+            }],
+            input: None,
+            output: None,
+        });
+        let win = AppWindow::new().unwrap();
+        let app = App {
+            engine: Rc::new(RefCell::new(Engine::new(plugins, st.clone(), Arc::new(|_| {})))),
+            view: Rc::new(RefCell::new(View::default())),
+            win: win.as_weak(),
+            pw: Rc::new(pwthread::start(|_| {})),
+            dirty: Rc::new(Cell::new(false)),
+            models: Rc::new(RefCell::new(Models::default())),
+            links: Rc::new(Cell::new((0, 0))),
+            history: Rc::new(RefCell::new(history::History::default())),
+        };
+        app.wire(&win);
+        app.refresh();
+        show(&win);
+        assert!(!win.get_can_undo() && !win.get_can_redo());
+
+        let enabled = || app.engine.borrow().state.chains[0].enabled;
+        win.invoke_set_chain_enabled(false);
+        assert!(!enabled() && win.get_can_undo());
+
+        keys(&win, &["ctrl", "z"]);
+        assert!(enabled(), "Ctrl+Z undid the edit");
+        assert!(win.get_can_redo() && !win.get_can_undo());
+        keys(&win, &["ctrl", "shift", "Z"]);
+        assert!(!enabled(), "Ctrl+Shift+Z redid it");
+        keys(&win, &["ctrl", "z"]);
+        keys(&win, &["ctrl", "y"]);
+        assert!(!enabled(), "and so does Ctrl+Y");
+        keys(&win, &["ctrl", "z"]);
+        assert!(enabled());
+
+        // A drag is one step, however many positions it went through.
+        let before = app.engine.borrow().state.clone();
+        for i in 0..40 {
+            win.invoke_param_slide(0, "ratio".into(), 0.2 + 0.015 * i as f32);
+        }
+        let dragged = app.engine.borrow().state.clone();
+        assert_ne!(dragged, before);
+        keys(&win, &["ctrl", "z"]);
+        assert_eq!(app.engine.borrow().state, before, "one Ctrl+Z took the whole drag back");
+        keys(&win, &["ctrl", "shift", "Z"]);
+        assert_eq!(app.engine.borrow().state, dragged, "and one Ctrl+Shift+Z put it back");
+
+        // Typing in a field: Ctrl+Z is the field's.
+        let field = field_of(&win, "NameField::field");
+        field.single_click(PointerEventButton::Left).await;
+        let state = app.engine.borrow().state.clone();
+        keys(&win, &["ctrl", "z"]);
+        assert_eq!(app.engine.borrow().state, state, "a focused text field keeps Ctrl+Z");
+        win.hide().unwrap();
     }
 
     /// The third meter strip is there for a dynamics filter and absent for
@@ -2437,7 +2603,8 @@ mod window_tests {
     }
 
     /// At the window's minimum width every toolbar button is inside the
-    /// window. It was not: "Restore default" hung off the right-hand edge.
+    /// window. It was not -- "Restore default" hung off the edge before undo
+    /// and redo were added, and they pushed two more buttons after it.
     async fn the_toolbar_fits_the_narrowest_window() {
         let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
         win.set_presets(strings(&["voice".into()]));
@@ -2747,6 +2914,7 @@ mod render {
             dirty: Rc::new(Cell::new(false)),
             models: Rc::new(RefCell::new(Models::default())),
             links: Rc::new(Cell::new((0, 0))),
+            history: Rc::new(RefCell::new(history::History::default())),
         };
         app.refresh();
         win.show().unwrap();

@@ -68,6 +68,13 @@ See [Running without the window](#running-without-the-window).
   back to position, wrapping on both sides — which is what makes a mono mic
   feed both sides of a stereo chain and a stereo source fold down into a mono
   one. Any pairing can be overridden in the channel matrix.
+- **Undo and redo.** Every edit can be undone -- ↶ and ↷ in the toolbar,
+  or Ctrl+Z and Ctrl+Shift+Z (Ctrl+Y too) -- and the log says what was
+  undone: "undid: delete chain Voice". A slider drag is one step, not one
+  per pixel, and loading a preset or restoring the default is a step like
+  any other, so an accidental one comes back. Undoing applies the earlier
+  state as loading a preset does: only what it moved restarts. In a text
+  field Ctrl+Z belongs to the field.
 - **Saving.** The session is written out as you work. Named presets and a
   "default state" that **Restore default** goes back to are the same file
   format, so they are interchangeable and editable by hand.
@@ -263,7 +270,7 @@ dropdown keeps a row's worth of space between itself and whatever follows.
 cargo test
 ```
 
-69 of them, and one more that is not a test but a way to look: run
+75 of them, and one more that is not a test but a way to look: run
 `PWFX_RENDER_OUT=/tmp/w.rgba cargo test render_the_window -- --ignored` and
 it renders the window, with real filters and their curves, to raw RGBA
 off-screen. Five of the tests are worth pointing at:
