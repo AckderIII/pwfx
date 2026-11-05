@@ -63,6 +63,11 @@ component EndpointCard inherits Card {
 export component AppWindow inherits Window {
     forward-focus: keys;
     title: "pwfx — PipeWire filter chains";
+    // For X11 desktops whose panels take the icon from the window rather
+    // than from pwfx.desktop (Xfce, MATE, tint2, ...). Wayland has no way to
+    // send one and ignores it; there the app id finds the desktop file.
+    // Embedded at build time, so nothing has to be found at runtime.
+    icon: @image-url("../../packaging/appimage/pwfx.svg");
     preferred-width: 1180px;
     preferred-height: 780px;
     min-width: 900px;

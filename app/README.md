@@ -190,6 +190,7 @@ and names do not.
 | `src/state.rs` | the save file, which is the whole user-visible model |
 | `src/ui.rs` | slider positions and value formatting |
 | `src/main.rs` | the command line, and the window: state into models, clicks into edits |
+| `src/desktop.rs` | `--install-desktop`: the desktop file and icon, written where the desktop looks |
 | `src/headless.rs` | the same, with no window: a loop, signals, and the save file read but never written |
 | `ui/*.slint` | the window itself |
 
@@ -199,7 +200,16 @@ and names do not.
 make appimage     # from the top of the tree; needs podman
 ./dist/pwfx-*-x86_64.AppImage
 ./dist/pwfx-*-x86_64.AppImage --headless
+./dist/pwfx-*-x86_64.AppImage --install-desktop
 ```
+
+`--install-desktop` puts `pwfx.desktop` and the icon into `~/.local/share`
+(`$XDG_DATA_HOME`), with `Exec=` naming the AppImage. That is what lets the
+desktop show the window's name and icon: the window's app id is `pwfx`, and
+GNOME matches it against desktop files in the XDG data directories only, which
+the copy inside the image is not in. Run it again after moving the AppImage;
+delete the two files it names to undo it. An integration tool such as Gear
+Lever does the same.
 
 One file holding `pwfx` and the ten filters. It is built in a Debian 12
 container, so it runs on any system with glibc 2.36 and PipeWire 0.3.65 or

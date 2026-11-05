@@ -23,6 +23,7 @@
 //! back into edits. It holds no state of its own beyond what is being looked
 //! at.
 
+mod desktop;
 mod engine;
 mod graph;
 mod headless;
@@ -117,6 +118,7 @@ struct App {
 const USAGE: &str = "\
 usage: pwfx                     open the window
        pwfx --headless [FILE]   run the chains and buses with no window
+       pwfx --install-desktop   add pwfx to the desktop's applications
 
 FILE is a save file, or the name of a preset. Without one, --headless runs
 what the window last left: session.json, or default.json if there is none.
@@ -124,11 +126,16 @@ what the window last left: session.json, or default.json if there is none.
 With no window, nothing is saved. SIGHUP reads FILE again and changes only
 what moved in it; SIGTERM or Ctrl-C stops everything and removes the buses.
 
+--install-desktop writes pwfx.desktop and its icon into ~/.local/share
+(XDG_DATA_HOME), starting this AppImage or binary: the desktop then shows the
+window's name and icon. Run it again after moving the file.
+
 Only one pwfx runs at a time, window or not.";
 
 enum Mode {
     Window,
     Headless(Option<PathBuf>),
+    InstallDesktop,
     Help,
 }
 
@@ -137,6 +144,7 @@ fn parse_args(args: &[String]) -> Result<Mode, String> {
         [] => Ok(Mode::Window),
         [h] if h == "-h" || h == "--help" => Ok(Mode::Help),
         [h] if h == "--headless" => Ok(Mode::Headless(None)),
+        [h] if h == "--install-desktop" => Ok(Mode::InstallDesktop),
         [h, file] if h == "--headless" && !file.starts_with('-') => {
             Ok(Mode::Headless(Some(file.into())))
         }
@@ -153,6 +161,22 @@ fn main() -> ExitCode {
             use std::io::Write;
             let _ = writeln!(std::io::stdout(), "{USAGE}");
             return ExitCode::SUCCESS;
+        }
+        // Touches no state and no graph, so it needs no lock: it can be run
+        // while pwfx is open.
+        Ok(Mode::InstallDesktop) => {
+            return match desktop::install() {
+                Ok(paths) => {
+                    for p in paths {
+                        println!("wrote {}", p.display());
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("pwfx: {e}");
+                    ExitCode::FAILURE
+                }
+            };
         }
         Ok(mode) => mode,
         Err(e) => {
@@ -180,6 +204,15 @@ fn main() -> ExitCode {
     }
 }
 
+/// Name the window after `pwfx.desktop`, which is how the desktop finds its
+/// name and icon: on Wayland the app id is the only link between a window and
+/// a desktop file, and without one GNOME shows a generic icon and "Unknown".
+/// Needs the platform, so it comes after the first component is created, and
+/// takes effect when the window is shown.
+fn set_app_id() {
+    let _ = slint::set_xdg_app_id("pwfx");
+}
+
 /// Say why the window is not opening, in a window: started from a launcher
 /// there is nobody reading stderr, and a second launch that silently does
 /// nothing looks broken. Best effort -- with no display to put it on, the
@@ -192,6 +225,7 @@ fn show_refusal(pid: Option<u32>) {
         }).ok()
     });
     let Ok(win) = RefusedWindow::new() else { return };
+    set_app_id();
     win.set_heading(heading.into());
     win.set_body(body.into());
     let weak = win.as_weak();
@@ -285,6 +319,7 @@ fn window() {
     let (engine, pw, rx) = boot(state, load_error);
 
     let win = AppWindow::new().expect("cannot create the window");
+    set_app_id();
     let app = App {
         engine: Rc::new(RefCell::new(engine)),
         view: Rc::new(RefCell::new(View {
@@ -1990,6 +2025,8 @@ mod arg_tests {
         assert!(matches!(parse(&["--headless"]), Ok(Mode::Headless(None))));
         assert!(matches!(parse(&["--headless", "mic"]),
                          Ok(Mode::Headless(Some(f))) if f == PathBuf::from("mic")));
+        assert!(matches!(parse(&["--install-desktop"]), Ok(Mode::InstallDesktop)));
+        assert!(parse(&["--install-desktop", "x"]).is_err());
         assert!(parse(&["--headless", "--verbose"]).is_err());
         assert!(parse(&["mic.json"]).is_err());
     }

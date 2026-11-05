@@ -6,5 +6,6 @@ Comment=Filter chains and virtual devices for PipeWire
 Exec=pwfx
 Icon=pwfx
 Terminal=false
+StartupWMClass=pwfx
 Categories=AudioVideo;Audio;Mixer;
 Keywords=PipeWire;audio;filter;equalizer;compressor;microphone;
