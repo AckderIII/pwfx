@@ -23,10 +23,10 @@
 //! back into edits. It holds no state of its own beyond what is being looked
 //! at.
 
-mod desktop;
 mod engine;
 mod graph;
 mod headless;
+mod install;
 mod history;
 mod plugin;
 mod process;
@@ -119,6 +119,7 @@ const USAGE: &str = "\
 usage: pwfx                     open the window
        pwfx --headless [FILE]   run the chains and buses with no window
        pwfx --install-desktop   add pwfx to the desktop's applications
+       pwfx --install-service   add a systemd user unit for --headless
 
 FILE is a save file, or the name of a preset. Without one, --headless runs
 what the window last left: session.json, or default.json if there is none.
@@ -128,7 +129,9 @@ what moved in it; SIGTERM or Ctrl-C stops everything and removes the buses.
 
 --install-desktop writes pwfx.desktop and its icon into ~/.local/share
 (XDG_DATA_HOME), starting this AppImage or binary: the desktop then shows the
-window's name and icon. Run it again after moving the file.
+window's name and icon. --install-service writes pwfx.service into
+~/.config/systemd/user (XDG_CONFIG_HOME), running this file --headless, and
+leaves enabling it to you. Run either again after moving the file.
 
 Only one pwfx runs at a time, window or not.";
 
@@ -136,6 +139,7 @@ enum Mode {
     Window,
     Headless(Option<PathBuf>),
     InstallDesktop,
+    InstallService,
     Help,
 }
 
@@ -145,6 +149,7 @@ fn parse_args(args: &[String]) -> Result<Mode, String> {
         [h] if h == "-h" || h == "--help" => Ok(Mode::Help),
         [h] if h == "--headless" => Ok(Mode::Headless(None)),
         [h] if h == "--install-desktop" => Ok(Mode::InstallDesktop),
+        [h] if h == "--install-service" => Ok(Mode::InstallService),
         [h, file] if h == "--headless" && !file.starts_with('-') => {
             Ok(Mode::Headless(Some(file.into())))
         }
@@ -162,13 +167,21 @@ fn main() -> ExitCode {
             let _ = writeln!(std::io::stdout(), "{USAGE}");
             return ExitCode::SUCCESS;
         }
-        // Touches no state and no graph, so it needs no lock: it can be run
-        // while pwfx is open.
-        Ok(Mode::InstallDesktop) => {
-            return match desktop::install() {
+        // These touch no state and no graph, so they need no lock: they can
+        // be run while pwfx is open.
+        Ok(mode @ (Mode::InstallDesktop | Mode::InstallService)) => {
+            let service = matches!(mode, Mode::InstallService);
+            let done = if service { install::service() } else { install::desktop() };
+            return match done {
                 Ok(paths) => {
                     for p in paths {
                         println!("wrote {}", p.display());
+                    }
+                    if service {
+                        println!("to start it from login:\n  \
+                                  systemctl --user daemon-reload\n  \
+                                  systemctl --user enable --now pwfx\n\
+                                  (only one pwfx runs at a time: close the window first)");
                     }
                     ExitCode::SUCCESS
                 }
@@ -2027,6 +2040,7 @@ mod arg_tests {
                          Ok(Mode::Headless(Some(f))) if f == PathBuf::from("mic")));
         assert!(matches!(parse(&["--install-desktop"]), Ok(Mode::InstallDesktop)));
         assert!(parse(&["--install-desktop", "x"]).is_err());
+        assert!(matches!(parse(&["--install-service"]), Ok(Mode::InstallService)));
         assert!(parse(&["--headless", "--verbose"]).is_err());
         assert!(parse(&["mic.json"]).is_err());
     }

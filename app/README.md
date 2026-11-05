@@ -130,7 +130,11 @@ which is to be stopped first. The kernel drops the lock with the process, so a c
 stale behind.
 
 [`pwfx.service`](pwfx.service) is a systemd user unit for running it from
-login; its comments have the three commands to install it.
+login; its comments have the three commands to install it by hand.
+`pwfx --install-service` writes it into `~/.config/systemd/user` with
+`ExecStart=` naming the binary or AppImage it was run from, and prints the
+`systemctl` lines that enable it. It does not run them: a service started
+while the window is open would only be refused.
 
 ## How it is put together
 
@@ -190,7 +194,7 @@ and names do not.
 | `src/state.rs` | the save file, which is the whole user-visible model |
 | `src/ui.rs` | slider positions and value formatting |
 | `src/main.rs` | the command line, and the window: state into models, clicks into edits |
-| `src/desktop.rs` | `--install-desktop`: the desktop file and icon, written where the desktop looks |
+| `src/install.rs` | `--install-desktop` and `--install-service`: the desktop file, icon and systemd unit, written where they are looked for |
 | `src/headless.rs` | the same, with no window: a loop, signals, and the save file read but never written |
 | `ui/*.slint` | the window itself |
 
@@ -218,8 +222,8 @@ since -- and needs no `libfuse2`. Not Ubuntu 22.04: its PipeWire 0.3.48 is
 older than the app's PipeWire bindings support. It carries no libraries: PipeWire, the graphics stack and the
 fonts are the system's, which is how they have to be found anyway.
 
-For headless mode from login, point the systemd unit at it:
-`ExecStart=%h/Applications/pwfx.AppImage --headless`. The filters are found
+For headless mode from login, `./pwfx-*.AppImage --install-service` writes the
+systemd unit pointing at the AppImage; enable it as it says. The filters are found
 inside the image the same way they are found next to the binary in `bin/`.
 
 The build runs `make test` inside the container too, so the filters in the
