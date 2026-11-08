@@ -1,6 +1,6 @@
 [package]
 name    = "pwfx"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Filter-chain patchbay for the pw_* PipeWire filter nodes"
 
