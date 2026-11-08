@@ -128,6 +128,10 @@ pub struct PluginDesc {
     /// Whether it answers "curve" with its response. A filter lists
     /// `--curve` in its help exactly when it does.
     pub curve: bool,
+    /// Whether it has a mono sidechain input, `sc_in`, which a stage can be
+    /// given a source for. Its help lists the port, under "ports", exactly
+    /// when it does.
+    pub sidechain: bool,
 }
 
 impl PluginDesc {
@@ -319,6 +323,7 @@ pub fn parse_help(text: &str) -> Result<PluginDesc, String> {
         path: PathBuf::new(),
         params,
         curve: text.lines().any(|l| l.trim_start().starts_with("--curve ")),
+        sidechain: text.lines().any(|l| l.trim_start().starts_with("sc_in ")),
     })
 }
 
@@ -586,10 +591,16 @@ mod against_the_real_filters {
             let curveless = ["pw_delay", "pw_denoise"].contains(&d.name.as_str());
             assert_eq!(d.curve, !curveless, "{}: --curve in its help", d.name);
 
+            // A sidechain input on the sidechain compressor and nothing
+            // else: the stage card offers a source for it off this.
+            assert_eq!(d.sidechain, d.name == "pw_sccomp", "{}: sc_in in its help", d.name);
+
             // A gain-reduction meter on exactly the filters that reduce
             // gain, read-only and so never a knob. The window draws the
             // strip off this, so it must not appear on a low-pass.
-            let dynamics = ["pw_gate", "pw_comp", "pw_limit", "pw_deess", "pw_denoise"]
+            let dynamics = [
+                "pw_gate", "pw_comp", "pw_sccomp", "pw_limit", "pw_deess", "pw_denoise",
+            ]
                 .contains(&d.name.as_str());
             match d.param("gr") {
                 Some(gr) => {

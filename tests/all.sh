@@ -31,7 +31,8 @@ fi
 step "2. control protocol"
 run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
                               bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain \
-                              bin/pw_delay bin/pw_deess bin/pw_denoise
+                              bin/pw_delay bin/pw_deess bin/pw_denoise \
+                              bin/pw_sccomp
 
 step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
@@ -74,6 +75,16 @@ run python3 tests/live.py bin/pw_comp -c 2 -t -30 -R 4 -w 0 -a 1 -e 200 -k 5 \
 # the same, with 6 dB of makeup on top -- which the gr meter does not count
 run python3 tests/live.py bin/pw_comp -c 2 -t -30 -R 4 -w 0 -a 1 -e 200 -m 6 \
     -- --audio "1000" "1000=-8.66+-0.7" --gr "14.66+-0.5"
+
+# The sidechain compressor with nothing on sc_in: the same tone 20 dB over
+# threshold, and no reduction at all -- the detector hears the key, never
+# the audio, and an unlinked key is silence. 6 dB of makeup is all it adds.
+run python3 tests/live.py bin/pw_sccomp -c 2 -t -30 -R 4 -w 0 -m 6 \
+    -- "link max" ERROR "ratio 0.5" ERROR "gr 3" ERROR \
+    --audio "1000" "1000=6+-0.3" --gr "0+-0.05"
+# and with a key on sc_in: the audio cut by what the key's level demands,
+# the key itself nowhere in the output
+run python3 tests/sidechain.py bin/pw_sccomp
 
 # below the ceiling: untouched, and latency is lookahead + 12 taps of
 # interpolator group delay
@@ -128,7 +139,7 @@ run python3 tests/delay.py bin/pw_delay
 # Bypassing a lookahead filter keeps its timing and its crossfade clean:
 # impulse gaps unchanged through bypass on and off, and the tone at half a
 # period of the latency -- the one an undelayed dry signal cancels -- level.
-run python3 tests/bypass.py bin/pw_comp bin/pw_gate bin/pw_limit bin/pw_deess \
+run python3 tests/bypass.py bin/pw_comp bin/pw_sccomp bin/pw_gate bin/pw_limit bin/pw_deess \
     bin/pw_denoise
 
 # out-level with nothing connected to the output: the level the filter
@@ -149,6 +160,7 @@ done
 # settings land there often enough that a fixed bound made this flaky; the
 # bound that means something is the one the settings themselves imply.
 run python3 tests/stress.py --max-gain 119.2 bin/pw_comp -c 2
+run python3 tests/stress.py --max-gain 119.2 bin/pw_sccomp -c 2
 
 echo
 echo "==========================================================="

@@ -353,7 +353,8 @@ def main():
         node = find_node(objs, name)
         ports = ports_of(objs, node["id"])
         nch = int(params.get("channels", "2"))
-        nin = len([p for p in ports if p[0] == "in"])
+        # a sidechain input is one more, mono, and not one of the channels
+        nin = len([p for p in ports if p[0] == "in" and p[1] != "sc_in"])
         nout = len([p for p in ports if p[0] == "out"])
         check(nin == nch and nout == nch, "%d in / %d out ports" % (nin, nout),
               str(sorted(p[1] for p in ports)))

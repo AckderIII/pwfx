@@ -43,6 +43,7 @@ NODE = "bypass-test"
 # over the ceiling, no cut.
 TRANSPARENT = {
     "pw_comp": ["-t", "0", "-R", "1", "-w", "0"],
+    "pw_sccomp": ["-t", "0", "-R", "1", "-w", "0"],
     "pw_gate": ["-g", "0"],
     "pw_limit": ["-C", "0", "-i", "0"],
     "pw_deess": ["-g", "0"],

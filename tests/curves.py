@@ -100,6 +100,13 @@ err = worst([p for p in pts if abs(p[0] + 20) >= 5],
 check(err <= 0.006 and all(y <= x + 0.005 for x, y in pts),
       "pw_comp soft knee 10 dB: hard curve outside the knee, under the identity inside")
 
+# the sidechain compressor draws the same static curve from the same core:
+# the level a signal comes out at with the key at that level too
+kind, pts = curve("pw_sccomp", "-t", "-35", "-R", "6", "-w", "0", "-m", "3")
+err = worst(pts, lambda x: (x if x <= -35 else -35 + (x + 35) / 6.0) + 3)
+check(kind == "level" and err <= 0.006,
+      "pw_sccomp threshold -35 ratio 6 makeup 3: the static curve", "worst %.4f dB" % err)
+
 kind, pts = curve("pw_limit", "-C", "-1", "-i", "6")
 err = worst(pts, lambda x: min(x + 6, -1))
 check(kind == "level" and err <= 0.006, "pw_limit ceiling -1 input-gain 6", "worst %.4f dB" % err)

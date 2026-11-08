@@ -27,6 +27,11 @@
  *    is already in place when the transient arrives instead of arriving one
  *    attack-time late.
  *  - Peak or RMS detection; channel linking by max, by average, or off.
+ *  - Optionally an external key: a mono signal the detector hears instead
+ *    of the audio (pw_sccomp). With one, there is one detector and one gain
+ *    for every channel, and the key goes through the sidechain filters in
+ *    place of the audio -- exactly what the audio itself would get from
+ *    linking by max, were it mono and the key.
  *  - Sidechain high-pass and low-pass, affecting detection only.
  *  - Detector, gain and filter state are double precision. The audio path
  *    stays float and is only ever multiplied, never accumulated, so the
@@ -174,24 +179,31 @@ static inline void comp_fini(comp_state *s)
     memset(s, 0, sizeof *s);
 }
 
-/* One block. out[] lags in[] by c->L samples. */
+/* One block. out[] lags in[] by c->L samples.
+ *
+ * key, if not NULL, is what the detector hears instead of in[]: one mono
+ * signal, so one detector, linked by max over the one channel it has, and
+ * one gain applied to every channel. NULL is the plain compressor, and its
+ * arithmetic is exactly the reference's -- the key only changes which
+ * samples go in and how many. */
 static inline void comp_run(comp_state *s, const comp_coeffs *c,
-                            float *const *in, float *const *out,
-                            uint32_t channels, uint32_t n)
+                            float *const *in, const float *key,
+                            float *const *out, uint32_t channels, uint32_t n)
 {
     double sc[COMP_MAX_CHANNELS];
-    uint32_t k, ch;
-    int d, L = c->L, ndet = c->ndet;
+    uint32_t k, ch, nsc = key ? 1 : channels;
+    int d, L = c->L, ndet = c->ndet, link = key ? COMP_LINK_MAX : c->link;
 
     if (L > s->max_L) L = s->max_L;
+    if (key) ndet = 1;
     if (ndet > (int)channels) ndet = (int)channels;
 
     for (k = 0; k < n; k++) {
         int rd;
 
-        /* sidechain conditioning, per channel */
-        for (ch = 0; ch < channels; ch++) {
-            double v = (double)in[ch][k];
+        /* sidechain conditioning, per detected channel */
+        for (ch = 0; ch < nsc; ch++) {
+            double v = (double)(key ? key[k] : in[ch][k]);
             if (!isfinite(v)) v = 0.0;
             if (c->use_hp) v = biquad_run(&c->hp, &s->hp_st[ch], v);
             if (c->use_lp) v = biquad_run(&c->lp, &s->lp_st[ch], v);
@@ -201,16 +213,16 @@ static inline void comp_run(comp_state *s, const comp_coeffs *c,
         for (d = 0; d < ndet; d++) {
             double det, xdb, xL, gdb;
 
-            if (c->link == COMP_LINK_OFF) {
+            if (link == COMP_LINK_OFF) {
                 det = fabs(sc[d]);
                 if (c->aRms > 0.0) {
                     s->rms_acc[d] = c->aRms * s->rms_acc[d]
                                   + (1.0 - c->aRms) * det * det;
                     det = sqrt(s->rms_acc[d]);
                 }
-            } else if (c->link == COMP_LINK_MAX) {
+            } else if (link == COMP_LINK_MAX) {
                 det = 0.0;
-                for (ch = 0; ch < channels; ch++) {
+                for (ch = 0; ch < nsc; ch++) {
                     double v = fabs(sc[ch]);
                     if (v > det) det = v;
                 }
@@ -221,8 +233,8 @@ static inline void comp_run(comp_state *s, const comp_coeffs *c,
                 }
             } else {                              /* avg */
                 double sum = 0.0;
-                for (ch = 0; ch < channels; ch++) sum += sc[ch] * sc[ch];
-                sum /= (double)channels;
+                for (ch = 0; ch < nsc; ch++) sum += sc[ch] * sc[ch];
+                sum /= (double)nsc;
                 if (c->aRms > 0.0) {
                     s->rms_acc[0] = c->aRms * s->rms_acc[0]
                                   + (1.0 - c->aRms) * sum;
@@ -263,7 +275,7 @@ static inline void comp_run(comp_state *s, const comp_coeffs *c,
 
         for (ch = 0; ch < channels; ch++)
             out[ch][k] = (float)(s->ring[(size_t)rd * channels + ch] *
-                                 s->gain[c->link == COMP_LINK_OFF ? ch : 0]);
+                                 s->gain[link == COMP_LINK_OFF ? ch : 0]);
 
         s->w = (s->w + 1) % s->ring_frames;
     }

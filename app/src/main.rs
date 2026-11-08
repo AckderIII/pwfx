@@ -88,6 +88,9 @@ struct View {
     /// strings the window shows. Entry 0 is "none" and is empty.
     source_nodes: Vec<String>,
     sink_nodes: Vec<String>,
+    /// Likewise for the sidechain pickers on the stage cards, which all
+    /// share one list.
+    sidechain_nodes: Vec<String>,
     /// Which end the channel matrix is open on, if any.
     map: Option<Dir>,
     /// Port names in the matrix's row order.
@@ -597,6 +600,7 @@ impl App {
                 let missing_plugin = c.stages.iter().any(|s| e.plugin(&s.plugin).is_none());
                 let missing_node = [c.input.as_ref(), c.output.as_ref()]
                     .into_iter()
+                    .chain(c.stages.iter().map(|s| s.sidechain.as_ref()))
                     .flatten()
                     .any(|ep| e.graph.lookup(&ep.node).is_none());
                 ChainRow {
@@ -841,6 +845,15 @@ impl App {
             }
         }
 
+        // --- the sidechain sources, one list for every stage card ---
+        let (sc_options, sc_nodes, sc_index) = sidechain_model(&e, chain);
+        if m.sidechain_key != sc_options {
+            win.set_sidechain_options(strings(&sc_options));
+            m.sidechain_key = sc_options;
+        }
+        v.sidechain_nodes = sc_nodes;
+        let sc = |i: usize| sc_index.get(i).copied().unwrap_or(0);
+
         // --- the stages ---
         //
         // Only a change of shape -- a stage added, removed, moved, or a
@@ -870,7 +883,8 @@ impl App {
                 .stages
                 .iter()
                 .zip(&m.params)
-                .map(|(s, p)| stage_row(&e, chain, s, ModelRc::from(p.clone())))
+                .enumerate()
+                .map(|(i, (s, p))| stage_row(&e, chain, s, ModelRc::from(p.clone()), sc(i)))
                 .collect();
             let stages = Rc::new(VecModel::from(rows));
             // Whether the gr strip is there is part of the shape: it is
@@ -915,7 +929,7 @@ impl App {
                         }
                     }
                 }
-                let row = stage_row(&e, chain, stage, ModelRc::from(m.params[i].clone()));
+                let row = stage_row(&e, chain, stage, ModelRc::from(m.params[i].clone()), sc(i));
                 if stages.row_data(i).as_ref() != Some(&row) {
                     stages.set_row_data(i, row);
                 }
@@ -1034,6 +1048,7 @@ struct Models {
     widths_key: Vec<String>,
     source_key: Vec<String>,
     sink_key: Vec<String>,
+    sidechain_key: Vec<String>,
     plugins_key: Vec<String>,
     presets_key: Vec<String>,
     log_key: usize,
@@ -1101,11 +1116,28 @@ fn strings(v: &[String]) -> ModelRc<SharedString> {
     ))
 }
 
-fn stage_row(e: &Engine, chain: &Chain, stage: &Stage, params: ModelRc<ParamRow>) -> StageRow {
+/// One stage card. `sc_index` is its entry in the shared sidechain list.
+fn stage_row(
+    e: &Engine,
+    chain: &Chain,
+    stage: &Stage,
+    params: ModelRc<ParamRow>,
+    sc_index: i32,
+) -> StageRow {
     let node = chain.node_name(stage);
     let rt = e.runtime(&node).cloned().unwrap_or_default();
     match e.plugin(&stage.plugin) {
         Some(desc) => StageRow {
+            has_sidechain: desc.sidechain,
+            sc_index,
+            sc_detail: if desc.sidechain {
+                match stage.sidechain.as_ref() {
+                    None => "nothing linked".into(),
+                    ep => endpoint_detail(e, ep, &e.sidechain_pairs(stage), 1).into(),
+                }
+            } else {
+                SharedString::new()
+            },
             node: node.as_str().into(),
             plugin: desc.name.as_str().into(),
             title: desc.name.as_str().into(),
@@ -1126,6 +1158,7 @@ fn stage_row(e: &Engine, chain: &Chain, stage: &Stage, params: ModelRc<ParamRow>
             latency: "".into(),
             error: format!("No filter called {} was found.", stage.plugin).into(),
             params,
+            ..Default::default()
         },
     }
 }
@@ -1353,6 +1386,34 @@ fn endpoint_model(
             }
         },
     };
+    (options, nodes, index)
+}
+
+/// The sidechain pickers' strings and node names, and each stage's entry.
+///
+/// One list for every card in the chain: what a chain's input could take,
+/// with "none" first, and after it any saved sidechain whose source is not
+/// in the graph right now -- kept in its place, as `endpoint_model` keeps an
+/// unplugged input, rather than forgotten. A stage without a sidechain
+/// input reads 0 and shows no picker.
+fn sidechain_model(e: &Engine, chain: &Chain) -> (Vec<String>, Vec<String>, Vec<i32>) {
+    let (mut options, mut nodes, _) = endpoint_model(e, Dir::Out, None);
+    options[0] = "— none —".into();
+    let index = chain
+        .stages
+        .iter()
+        .map(|s| match s.sidechain.as_ref() {
+            None => 0,
+            Some(ep) => match nodes.iter().position(|n| *n == ep.node) {
+                Some(i) => i as i32,
+                None => {
+                    options.push(format!("{}  ·  not connected", ep.label));
+                    nodes.push(ep.node.clone());
+                    (nodes.len() - 1) as i32
+                }
+            },
+        })
+        .collect();
     (options, nodes, index)
 }
 
@@ -1673,6 +1734,7 @@ impl App {
                     id,
                     plugin: desc.name.clone(),
                     bypass: false,
+                    sidechain: None,
                     params: desc.defaults(),
                 });
             });
@@ -1752,6 +1814,9 @@ impl App {
         });
         on!(on_set_sink, |app, i| {
             app.set_endpoint(Dir::In, i);
+        });
+        on!(on_set_sidechain, |app, stage, i| {
+            app.set_sidechain(stage, i);
         });
 
         on!(on_open_map, |app, is_input| {
@@ -1964,6 +2029,44 @@ impl App {
                 label,
                 mapping,
             });
+        });
+    }
+
+    /// Point a stage's sidechain at entry `index` of the shared list, or at
+    /// nothing for entry 0. Labelled like a chain's input, so a source that
+    /// is unplugged later can still be named.
+    fn set_sidechain(&self, stage: i32, index: i32) {
+        let (stage, index) = (stage.max(0) as usize, index.max(0) as usize);
+        self.edit(move |e, v| {
+            let Some(node) = v.sidechain_nodes.get(index).cloned() else {
+                return;
+            };
+            let label = if node == default_endpoint(Dir::Out) {
+                default_label(Dir::Out).to_string()
+            } else {
+                e.graph
+                    .node(&node)
+                    .map(|n| n.description.clone())
+                    .unwrap_or_else(|| node.clone())
+            };
+            let Some(s) = e
+                .state
+                .chains
+                .get_mut(v.selected)
+                .and_then(|c| c.stages.get_mut(stage))
+            else {
+                return;
+            };
+            s.sidechain = match s.sidechain.take() {
+                _ if node.is_empty() => None,
+                // the same source again keeps what it was
+                Some(ep) if ep.node == node => Some(ep),
+                _ => Some(Endpoint {
+                    node,
+                    label,
+                    mapping: Mapping::Auto,
+                }),
+            };
         });
     }
 
@@ -2192,6 +2295,7 @@ mod window_tests {
             latency: "".into(),
             error: "".into(),
             params: ModelRc::new(VecModel::from(params)),
+            ..Default::default()
         }])));
         win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-240.0, -240.0, None)])));
         win
@@ -2556,6 +2660,7 @@ mod window_tests {
                 id: "comp".into(),
                 plugin: "pw_comp".into(),
                 bypass: false,
+                sidechain: None,
                 params: [("ratio".to_string(), "3".to_string())].into_iter().collect(),
             }],
             input: None,
@@ -2670,6 +2775,17 @@ mod window_tests {
         let win = one_stage_window(vec![number_param("b3-freq", "1000", 0.5)]);
         win.set_presets(strings(&["voice".into()]));
         win.set_chain_latency("+10.0 ms latency".into());
+        // A sidechain row too, with the longest things it says: its picker
+        // shares the card's width with a label and a detail.
+        let rows = win.get_stages();
+        let mut row = rows.row_data(0).unwrap();
+        row.has_sidechain = true;
+        row.sc_detail = "following Scarlett 2i2 4th Gen Headphones / Line 1-2 · 2 links".into();
+        rows.set_row_data(0, row);
+        win.set_sidechain_options(strings(&[
+            "— none —".into(),
+            "Scarlett 2i2 4th Gen Headphones / Line 1-2  ·  2 ch  ·  monitor".into(),
+        ]));
         show(&win);
         let min_w = 900.0;
         win.window().set_size(slint::LogicalSize::new(min_w, 700.0));
@@ -2940,6 +3056,7 @@ mod render {
             id: id.into(),
             plugin: plugin.into(),
             bypass: false,
+            sidechain: None,
             params: params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>(),
         };
         let mut st = state::AppState::default();

@@ -29,7 +29,7 @@ static void chunk(comp_state *s, const comp_coeffs *c, const float *src,
         for (n = 0; n < frames; n++)
             inb[ch][n] = src ? src[n * channels + ch] : 0.0f;
 
-    comp_run(s, c, inb, outb, (uint32_t)channels, (uint32_t)frames);
+    comp_run(s, c, inb, NULL, outb, (uint32_t)channels, (uint32_t)frames);
 
     for (n = 0; n < frames; n++) {
         if (*skip > 0) { (*skip)--; continue; }

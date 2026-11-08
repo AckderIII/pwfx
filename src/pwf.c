@@ -109,6 +109,7 @@ struct pwf {
 
     struct pwf_port *in[PWF_MAX_CHANNELS];
     struct pwf_port *out[PWF_MAX_CHANNELS];
+    struct pwf_port *sc;            /* sidechain input, if desc->sidechain */
 
     uint32_t channels;
     double   rate;
@@ -720,8 +721,10 @@ static void on_process(void *data, struct spa_io_position *position)
     uint32_t total = position->clock.duration;
     uint32_t rate  = position->clock.rate.denom;
     uint32_t nch = s->channels, i, j, pub, done, lat;
-    float *base_in[PWF_MAX_CHANNELS], *base_out[PWF_MAX_CHANNELS];
-    float *in[PWF_MAX_CHANNELS], *out[PWF_MAX_CHANNELS];
+    /* in[] has one more entry than there are channels: the sidechain,
+     * for a filter that has one, follows the audio inputs. */
+    float *base_in[PWF_MAX_CHANNELS + 1], *base_out[PWF_MAX_CHANNELS];
+    float *in[PWF_MAX_CHANNELS + 1], *out[PWF_MAX_CHANNELS];
     const void *coeffs;
     int changed, meter;
     float ipk = 0.0f, opk = 0.0f;
@@ -741,6 +744,7 @@ static void on_process(void *data, struct spa_io_position *position)
         base_in[i]  = pw_filter_get_dsp_buffer(s->in[i], total);
         base_out[i] = pw_filter_get_dsp_buffer(s->out[i], total);
     }
+    base_in[nch] = s->sc ? pw_filter_get_dsp_buffer(s->sc, total) : NULL;
 
     /* One configuration for the whole quantum, read once. */
     pub     = atomic_load_explicit(&s->pub, memory_order_acquire);
@@ -768,6 +772,7 @@ static void on_process(void *data, struct spa_io_position *position)
             out[i] = base_out[i] ? base_out[i] + done
                                  : s->sink + (size_t)i * PWF_MAX_QUANTUM;
         }
+        in[nch] = base_in[nch] ? base_in[nch] + done : s->zero;
 
         /* Every slice goes into the bypass's dry delay, bypassed or not, so
          * its history is already there when bypass is switched on. */
@@ -1028,6 +1033,19 @@ static void usage(struct pwf *s, FILE *f, const char *prefix)
 "%s  \"curve\" prints the response as one \"curve KIND X:Y,X:Y,...\" line, the\n"
 "%s  points in drawing order.\n", prefix, prefix);
 
+    /* After "control protocol", which is where a consumer parsing the
+     * parameter table stops, so this cannot be read as a parameter. */
+    fprintf(f,
+"%s\n"
+"%sports\n"
+"%s  in_1 .. in_N, out_1 .. out_N   audio, N = channels, mono each\n",
+        prefix, prefix, prefix);
+    if (s->desc->sidechain)
+        fprintf(f,
+"%s  sc_in                          mono sidechain: heard, not passed on;\n"
+"%s                                 silence while nothing is linked to it\n",
+            prefix, prefix);
+
     if (s->desc->notes && *s->desc->notes) {
         fprintf(f, "%s\n", prefix);
         fput_prefixed(f, prefix, s->desc->notes);
@@ -1143,6 +1161,26 @@ static int add_ports(struct pwf *s)
                 if (d == 0) s->in[i] = port; else s->out[i] = port;
             }
         }
+    }
+
+    /* The sidechain: one mono input, after the audio ones. No channel
+     * position -- it is not one of the channels, and a session manager
+     * matching positions should not take it for the first of them. */
+    if (s->desc->sidechain) {
+        struct pw_properties *props = pw_properties_new(
+            PW_KEY_FORMAT_DSP, "32 bit float mono audio",
+            PW_KEY_PORT_NAME, "sc_in",
+            NULL);
+        if (!props) return -ENOMEM;
+        s->sc = pw_filter_add_port(s->filter, PW_DIRECTION_INPUT,
+                                   PW_FILTER_PORT_FLAG_MAP_BUFFERS,
+                                   sizeof(struct pwf_port), props, NULL, 0);
+        if (!s->sc) {
+            err("cannot add port sc_in");
+            return -EIO;
+        }
+        s->sc->s = s;
+        s->sc->idx = s->channels;
     }
     return 0;
 }

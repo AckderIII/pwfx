@@ -31,6 +31,12 @@ export struct StageRow {
     latency: string,
     error: string,
     params: [ParamRow],
+    // Only for a filter with a sidechain input: which entry of the window's
+    // shared sidechain list it listens to (0 is none), and what that is
+    // doing right now.
+    has-sidechain: bool,
+    sc-index: int,
+    sc-detail: string,
 }
 
 /// A stage's meter readings: the level for the bar, and the figure to print
@@ -551,8 +557,11 @@ export component StageCard inherits Rectangle {
     in property <LevelRow> level;
     in property <CurveRow> curve;
     in property <bool> metering: false;
+    // The sources a sidechain can take, the same list for every stage.
+    in property <[string]> sc-options;
 
     callback set-bypass(bool);
+    callback set-sidechain(int);
     callback remove();
     callback move(int);      // -1 up, +1 down
     callback slide(string, float);
@@ -667,6 +676,32 @@ export component StageCard inherits Rectangle {
             font-size: Theme.fs-small;
             color: Theme.bad;
             wrap: word-wrap;
+        }
+
+        // --- what the sidechain listens to ------------------------------
+        if root.s.has-sidechain : HorizontalLayout {
+            spacing: Theme.gap;
+            Text {
+                text: "sidechain";
+                font-size: Theme.fs-small;
+                color: Theme.text-dim;
+                vertical-alignment: center;
+            }
+            Picker {
+                horizontal-stretch: 1;
+                options: root.sc-options;
+                index: root.s.sc-index;
+                picked(i) => { root.set-sidechain(i); }
+            }
+            Text {
+                text: root.s.sc-detail;
+                font-size: Theme.fs-small;
+                color: Theme.text-faint;
+                vertical-alignment: center;
+                min-width: 0px;
+                max-width: 160px;
+                overflow: elide;
+            }
         }
 
         Rectangle { height: 1px; background: Theme.line; }

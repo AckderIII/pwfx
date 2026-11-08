@@ -1,11 +1,12 @@
 # pw_* — PipeWire filter nodes
 
-Ten audio filters, each a standalone PipeWire filter node built on
+Eleven audio filters, each a standalone PipeWire filter node built on
 `pw_filter`. Six are ported from the raw stdin/stdout reference
 implementations in `reference/`; `pw_delay`, `pw_deess` and `pw_denoise` were
 written here together with references of their own -- `pw_denoise` around
-RNNoise, vendored in `third_party/rnnoise`; `pw_gain` has none, and is checked against arithmetic
-instead.
+RNNoise, vendored in `third_party/rnnoise`; `pw_sccomp` is `pw_comp`'s core
+with an external key, and is held to `reference/comp.c` itself; `pw_gain` has
+none, and is checked against arithmetic instead.
 
 | filter | what it is | latency |
 |---|---|---|
@@ -14,6 +15,7 @@ instead.
 | `pw_eq`    | 5-band parametric EQ: low shelf, three bells, high shelf | none |
 | `pw_gate`  | noise gate with lookahead, hysteresis and hold | lookahead |
 | `pw_comp`  | compressor, log-domain detector, soft knee, lookahead | lookahead |
+| `pw_sccomp` | `pw_comp` keyed by a separate mono input, `sc_in`: ducking | lookahead |
 | `pw_limit` | true-peak brickwall limiter | lookahead + 12 samples |
 | `pw_gain`  | gain, mute, polarity per side, balance; every change ramped | none |
 | `pw_delay` | delay up to 2 s, with feedback and mix for an echo | none reported (the delay is the effect) |
@@ -137,7 +139,7 @@ reduction. Read `gr` instead.
 
 ### Gain reduction
 
-`pw_gate`, `pw_comp`, `pw_limit`, `pw_deess` and `pw_denoise` have a third meter, `gr`: how far the
+`pw_gate`, `pw_comp`, `pw_sccomp`, `pw_limit`, `pw_deess` and `pw_denoise` have a third meter, `gr`: how far the
 filter is pulling the level down, in dB, as a positive number. It is
 reported on the same `meter` timer as the levels, and held the same way,
 falling back at 20 dB/s. The other filters have no `gr` at all: it is
@@ -157,6 +159,8 @@ moment it is applied:
 - `pw_comp`: the smoothed reduction, without makeup -- 6 dB of makeup
   does not make 14.7 dB of compression read as 8.7. Under `link off`, the
   channel being reduced the most.
+- `pw_sccomp`: the same, driven by the key on `sc_in`; 0 while nothing is
+  linked to it.
 - `pw_gate`: the closed gate reads its `range`. A gate snapped to silence
   (`range` 90 or more) has no finite number of dB to report, so it reads
   its range as well.
@@ -232,7 +236,7 @@ Every filter has these on top of its own:
 | `bypass` | pass the input through, crossfaded over 10 ms so it cannot click; a filter with latency keeps it, so bypassing does not move the audio in time |
 | `meter` | how often to report `in-level`, `out-level` and `gr`, in ms; 0 (the default) is off |
 | `in-level`, `out-level` | peak level at the input ports, and of the filter's output whether connected or not, in dBFS, floored at -240 (read-only) |
-| `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_limit`, `pw_deess` and `pw_denoise` only (read-only) |
+| `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_sccomp`, `pw_limit`, `pw_deess` and `pw_denoise` only (read-only) |
 | `max-rate` | the highest rate delay lines are sized for at startup (command line only) |
 | `node-name`, `target`, `node-latency` | PipeWire plumbing (command line only) |
 
@@ -279,6 +283,27 @@ pw-link chain-limit speakers
 ```
 
 Each stage reports its own latency, so PipeWire knows the total.
+
+## Ducking, by hand
+
+`pw_sccomp` has one more input than it has outputs: `sc_in`, a mono
+sidechain the detector listens to instead of the audio. Music in, a voice on
+the key, and the music gets out of the voice's way:
+
+```sh
+./bin/pw_sccomp -c 2 -t -35 -R 6 -e 400 -F 150 --node-name duck &
+
+pw-link music:output_FL  duck:in_1
+pw-link music:output_FR  duck:in_2
+pw-link mic:capture_MONO duck:sc_in
+pw-link duck:out_1 speakers:playback_FL
+pw-link duck:out_2 speakers:playback_FR
+```
+
+Link port by port: a node-to-node `pw-link` decides by itself which input
+gets what. With nothing on `sc_in` the key is silence and the audio passes
+untouched (makeup aside). In the app, the stage card has a **sidechain**
+picker for this instead.
 
 ## What changed from the reference implementations
 
@@ -346,6 +371,11 @@ tests/protocol.py  the stdin/stdout contract
 tests/gain.py      pw_gain per channel in the graph: each side's level and
                    polarity, and no clicks while switching any of it
 tests/impulse.py   pw_delay's impulse response against theory, offline
+tests/sccomp.py    pw_sccomp offline: byte for byte against reference/comp.c
+                   on streams where the original hears exactly the key,
+                   then the cut, release and lookahead against the design
+tests/sidechain.py pw_sccomp in the graph: the key on sc_in sets the cut,
+                   is never heard, and nothing on it means no cut
 tests/deess.py     pw_deess against its design equations, offline: the
                    cut at the centre, on the skirt, capped by the range,
                    in both detections and both modes, and bit-exact idle

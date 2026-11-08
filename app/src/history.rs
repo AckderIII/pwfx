@@ -168,6 +168,9 @@ fn chain_change(a: &Chain, b: &Chain) -> (String, Option<String>) {
             let verb = if y.bypass { "bypass" } else { "un-bypass" };
             return (format!("{verb} {} in {c}", y.plugin), None);
         }
+        if x.sidechain != y.sidechain {
+            return (format!("change the sidechain of {} in {c}", y.plugin), None);
+        }
         if x.params != y.params {
             let moved: Vec<&String> = y
                 .params
@@ -219,9 +222,9 @@ mod tests {
             enabled: true,
             width: 2,
             stages: vec![
-                Stage { id: "hpf".into(), plugin: "pw_hpf".into(), bypass: false,
+                Stage { id: "hpf".into(), plugin: "pw_hpf".into(), bypass: false, sidechain: None,
                         params: BTreeMap::from([("cutoff".into(), "80".into())]) },
-                Stage { id: "comp".into(), plugin: "pw_comp".into(), bypass: false,
+                Stage { id: "comp".into(), plugin: "pw_comp".into(), bypass: false, sidechain: None,
                         params: BTreeMap::from([("ratio".into(), "3".into()),
                                                 ("threshold".into(), "-18".into())]) },
             ],
@@ -257,6 +260,14 @@ mod tests {
         assert_eq!(name(&|s| { s.chains[0].stages.remove(0); }), "remove pw_hpf from Voice");
         assert_eq!(name(&|s| s.chains[0].stages.swap(0, 1)), "reorder the filters in Voice");
         assert_eq!(name(&|s| s.chains[0].stages[1].bypass = true), "bypass pw_comp in Voice");
+        assert_eq!(
+            name(&|s| s.chains[0].stages[1].sidechain = Some(crate::state::Endpoint {
+                node: "music".into(),
+                label: "Music".into(),
+                mapping: Default::default(),
+            })),
+            "change the sidechain of pw_comp in Voice"
+        );
         assert_eq!(name(&|s| set(s, 1, "ratio", "4")), "set pw_comp ratio in Voice");
         assert_eq!(name(&|s| { set(s, 1, "ratio", "4"); set(s, 1, "threshold", "-20") }),
                    "change pw_comp in Voice");

@@ -12,7 +12,10 @@ LIBS      = -lm
 # Built from whatever is in src/ and tests/, so the tree builds at every
 # stage of being filled in rather than only once all six exist.
 FILTERS   = $(patsubst src/pw_%.c,pw_%,$(wildcard src/pw_*.c))
-REFS      = $(patsubst tests/t_%.c,%,$(wildcard tests/t_*.c))
+REFS      = $(patsubst reference/%.c,%,$(wildcard reference/*.c))
+# Harnesses, which mostly pair with a reference of the same name; t_sccomp
+# is compared against reference/comp.c (tests/sccomp.py), so it has none.
+TESTS     = $(patsubst tests/t_%.c,%,$(wildcard tests/t_*.c))
 
 BIN       = bin
 OBJ       = build
@@ -70,11 +73,11 @@ $(BIN)/t_%: tests/t_%.c $(HEADERS) | $(BIN)
 refs: $(REFS:%=$(BIN)/ref/%)
 
 # The offline half: DSP cores diffed against the reference implementations.
-test: all refs $(REFS:%=$(BIN)/t_%)
+test: all refs $(TESTS:%=$(BIN)/t_%)
 	@tests/run.sh
 
 # Everything, including the live PipeWire tests. Needs a running daemon.
-check: all refs $(REFS:%=$(BIN)/t_%)
+check: all refs $(TESTS:%=$(BIN)/t_%)
 	@tests/all.sh
 
 # The GUI. Separate from `all` because it is a cargo build with its own

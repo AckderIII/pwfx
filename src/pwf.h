@@ -136,6 +136,14 @@ typedef struct {
      * got, and has to cope with any other. 0, the default, asks for none. */
     uint32_t rate;
 
+    /* Optional: nonzero gives the node one more input port, "sc_in", a
+     * mono sidechain the filter listens to but does not pass on. process()
+     * then finds it at in[channels], after the N audio inputs -- silence
+     * while nothing is linked to it. It is not metered (in-level is the
+     * audio arriving), not in the bypass's dry signal, and not counted in
+     * channels, which stays the number of port pairs. */
+    int sidechain;
+
     /* Optional, main thread, called once after init(): the most latency
      * design() can ever return, in samples, at init()'s max_rate. A filter
      * that delays its output sets it, and the framework then delays the dry

@@ -2,12 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Ten audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
-`pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`, `pw_denoise`), each a standalone
-PipeWire filter node built on `pw_filter`; all but `pw_gain` with a raw
-stdin/stdout reference implementation in `reference/` behind them -- the first
-six ported from theirs, `pw_delay`, `pw_deess` and `pw_denoise` written here
-together with their own -- and `pw_gain` with none; plus
+Eleven audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
+`pw_sccomp`, `pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`, `pw_denoise`),
+each a standalone PipeWire filter node built on `pw_filter`; all but
+`pw_gain` with a raw stdin/stdout reference implementation in `reference/`
+behind them -- the first six ported from theirs, `pw_delay`, `pw_deess` and
+`pw_denoise` written here together with their own, `pw_sccomp` held to
+`pw_comp`'s -- and `pw_gain` with none; plus
 `app/`, a Rust and Slint desktop app that drives them as plugins.
 
 ## Commands
@@ -168,6 +169,25 @@ reference shared the mistake. When the comparison cannot tell, measure against
 something outside both. It needs 48 kHz, asks for it through `pwf_desc.rate`,
 and passes its input through at any other rate.
 
+**`pw_sccomp` is `pw_comp` with a key, and has no reference of its own.**
+A filter that sets `pwf_desc.sidechain` gets one more input port, `sc_in`,
+mono, which `process()` finds at `in[channels]` -- silence while unlinked,
+not metered, not in the bypass's dry signal, not counted in `channels`.
+`comp_run()` takes it as `key` (NULL for `pw_comp`, whose arithmetic is
+untouched): one detector over the key, one gain for every channel. Since
+that is exactly what the original computes when its loudest channel is the
+key, `tests/sccomp.py` holds `bin/t_sccomp` to `bin/ref/comp` byte for byte
+-- a mono stream keyed by itself (sidechain filters included), and N
+channels that are the key times factors in [-1, 1] played to the reference
+as N + 1 channels, linked by max, the key's channel dropped -- and then
+checks cut, release and lookahead against the design. The Makefile takes
+references from `reference/` and harnesses from `tests/t_*.c` separately so
+that a harness without a same-named reference builds. In the graph,
+`tests/sidechain.py` links port by port, because a node-to-node `pw-link`
+picks which input gets what, and uses a fresh filter per run: a node left
+on a real device's clock rate-matches the next run's test streams off
+pitch.
+
 **Except `pw_delay`, which reports 0 on purpose.** Its delay is the effect, not
 processing it needs: reported, the graph would compensate it away, and lining
 one source up with another is the whole point of a plain delay. Do not "fix"
@@ -183,7 +203,7 @@ apart than one.
 same coefficients, same transposed direct form II, same double-precision state,
 same denormal flushing. `make test` proves it by running each filter's actual
 core through the reference's stream handling and `cmp`-ing against the reference
-binary — currently 66 cases across orders, block sizes, sidechain settings and
+binary — currently 66 cases (plus `tests/sccomp.py`'s twelve) across orders, block sizes, sidechain settings and
 edges, all byte-identical, plus four that drive the limiter hard into its
 ceiling and insist the breach count stays zero.
 
@@ -272,6 +292,15 @@ from it, not adding an action that does something. `PwCmd::SetNodes` is
 `SetLinks` one level up: the complete set of nodes that ought to exist, not a
 create or a destroy.
 
+**A stage's sidechain is a third kind of endpoint.** `Stage::sidechain` is
+an `Endpoint` like a chain's input, resolved the same way in
+`desired_links` (through `lookup`/`resolve_name`, one channel wide, so a
+stereo source folds onto the port) into `sc_in`, and only for a filter
+whose `--help` lists that port (`PluginDesc::sidechain`) -- a saved one on
+any other filter is kept and never linked. Every card shares one picker
+list (`sidechain_model`), which keeps a saved source that is not in the
+graph in its place as `endpoint_model` does.
+
 **Undo is a stack of earlier `AppState`s** (`app/src/history.rs`). Every edit
 goes through `App::edit`, which compares the state before and after and
 records a step only if it changed; `history::describe` names the step and
@@ -286,7 +315,7 @@ it that way: an edit made around `edit` is an edit that cannot be undone.
 
 **The AppImage bundles nothing but the binaries** (`packaging/appimage/`). Every
 binary links only libc, libm, libgcc_s and libpipewire, and the GUI loads its
-display libraries at runtime, so the AppDir is the eleven executables, a
+display libraries at runtime, so the AppDir is the twelve executables, a
 `.desktop` file, an icon and RNNoise's licence, which its BSD terms ask for
 in binary distributions too. `libpipewire` must stay the host's: it loads its
 own modules from the host's paths. `inside.sh` fails the build if a binary

@@ -49,6 +49,14 @@ for args in "-C -1 -i 24 -e 30 -k 5" "-C -0.1 -i 40 -e 5 -k 1" \
     fi
 done
 
+# The sidechain compressor has no reference of its own: it is the
+# compressor's core with a key, held to reference/comp.c on streams where the
+# original hears exactly that key, and then to the design where they differ.
+echo
+echo "sidechain compressor against reference/comp.c and its design:"
+python3 tests/sccomp.py
+fails=$((fails+$?))
+
 # The comparison above proves the delay core agrees with its reference;
 # this proves what they agree on is right.
 echo

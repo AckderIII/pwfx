@@ -138,7 +138,7 @@ static void comp_pw_process(void *user, const void *coeffs, int changed,
         s->last_link = c->link;
     }
 
-    comp_run(s, c, in, out, channels, n);
+    comp_run(s, c, in, NULL, out, channels, n);
 }
 
 static double comp_pw_gr(void *user, const void *coeffs)

@@ -62,6 +62,15 @@ See [Running without the window](#running-without-the-window).
   somewhere else yourself, in pavucontrol say, is left alone until it next
   starts. One application goes to one bus of each kind, so adding it to a
   second moves it.
+- **Sidechains.** A filter with a sidechain input (`pw_sccomp`, so far)
+  gets a **sidechain** picker on its stage card, offering everything a
+  chain's input could take: devices, sink monitors, application streams,
+  buses and the default input. A stereo source is folded onto the one mono
+  port, both sides summed. To key one chain from another -- duck the music
+  under the processed voice -- send the voice chain into a bus as well and
+  pick that bus. Like every other end, it is stored by name and comes back
+  when the device does, and a chain keyed from a bus is listed among the
+  bus's users.
 - **Channels.** A chain is mono, stereo or up to 64 channels wide. Matching
   the world to it is automatic: same-named channels line up (so FL/FR find
   FL/FR whatever order the device declares them in), and anything else falls

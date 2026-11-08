@@ -21,7 +21,10 @@ use crate::graph::{self, Dir, Graph};
 use crate::plugin::PluginDesc;
 use crate::process::{EventSink, FilterProc, ProcEvent};
 use crate::pwthread::{LinkSpec, NodeSpec, RouteSpec};
-use crate::state::{AppState, Bus, BusKind, Chain};
+use crate::state::{AppState, Bus, BusKind, Chain, Stage};
+
+/// The input port a filter with a sidechain listens to it on.
+pub const SIDECHAIN_PORT: &str = "sc_in";
 
 /// How often the meters report, in milliseconds, when they are on.
 const METER_MS: u32 = 80;
@@ -214,7 +217,11 @@ impl Engine {
             if c.output.as_ref().is_some_and(|e| e.node == node) {
                 uses.push((c.name.clone(), true));
             }
-            if c.input.as_ref().is_some_and(|e| e.node == node) {
+            if c.input.as_ref().is_some_and(|e| e.node == node)
+                || c.stages
+                    .iter()
+                    .any(|s| s.sidechain.as_ref().is_some_and(|e| e.node == node))
+            {
                 uses.push((c.name.clone(), false));
             }
         }
@@ -436,6 +443,31 @@ impl Engine {
             }
         }
 
+        // Each sidechain is one more source, into one mono port. It is
+        // resolved like a chain's input -- by name, through `lookup`, so a
+        // default follows the default -- one channel wide, which is what
+        // folds a stereo source onto the port.
+        for chain in self.state.chains.iter().filter(|c| c.enabled) {
+            for stage in &chain.stages {
+                let pairs = self.sidechain_pairs(stage);
+                let Some(src) = stage
+                    .sidechain
+                    .as_ref()
+                    .and_then(|ep| self.graph.resolve_name(&ep.node))
+                else {
+                    continue;
+                };
+                for (port, _) in pairs {
+                    links.push(LinkSpec {
+                        out_node: src.to_string(),
+                        out_port: port,
+                        in_node: chain.node_name(stage),
+                        in_port: SIDECHAIN_PORT.into(),
+                    });
+                }
+            }
+        }
+
         links.sort_by(|a, b| {
             (&a.out_node, &a.out_port, &a.in_node, &a.in_port).cmp(&(
                 &b.out_node,
@@ -457,6 +489,22 @@ impl Engine {
             Dir::In => chain.output.as_ref(),
         }?;
         self.graph.resolve_name(&endpoint.node).map(str::to_string)
+    }
+
+    /// The source ports a stage's sidechain takes, as `(port, 0)` pairs, or
+    /// nothing if it has none, its filter has no sidechain input, or the
+    /// source is not in the graph right now.
+    pub fn sidechain_pairs(&self, stage: &Stage) -> Vec<(String, usize)> {
+        let Some(ep) = stage.sidechain.as_ref() else {
+            return Vec::new();
+        };
+        if !self.plugin(&stage.plugin).is_some_and(|d| d.sidechain) {
+            return Vec::new();
+        }
+        let Some(node) = self.graph.lookup(&ep.node) else {
+            return Vec::new();
+        };
+        graph::resolve(&ep.mapping, node, Dir::Out, 1, true)
     }
 
     /// The `(port name, chain channel)` pairs for one end of a chain, or
@@ -708,15 +756,95 @@ mod tests {
     use crate::state::{BusKind, Endpoint, Stage};
 
     fn plugins() -> Vec<PluginDesc> {
-        ["pw_hpf", "pw_comp"]
+        ["pw_hpf", "pw_comp", "pw_sccomp"]
             .iter()
             .map(|n| {
+                // The ports section as pwf.c prints it, with the sidechain
+                // line only where the real one has it.
+                let sc = if *n == "pw_sccomp" {
+                    "  sc_in                          mono sidechain: heard, not passed on;\n"
+                } else {
+                    ""
+                };
                 parse_help(&format!(
-                    "{n} -- a filter\n\nfilter parameters (live, settable on stdin)\n  -f, --cutoff HZ            cutoff\n                             (1..20000 Hz, default 80)\n\nstream and node\n      --bypass on|off        bypass\n                             (default off)\n\ncontrol protocol\n"
+                    "{n} -- a filter\n\nfilter parameters (live, settable on stdin)\n  -f, --cutoff HZ            cutoff\n                             (1..20000 Hz, default 80)\n\nstream and node\n      --bypass on|off        bypass\n                             (default off)\n\ncontrol protocol\n\nports\n  in_1 .. in_N, out_1 .. out_N   audio, N = channels, mono each\n{sc}"
                 ))
                 .unwrap()
             })
             .collect()
+    }
+
+    fn keyed(node: &str) -> Option<Endpoint> {
+        Some(Endpoint {
+            node: node.into(),
+            label: node.into(),
+            mapping: Mapping::Auto,
+        })
+    }
+
+    #[test]
+    fn a_sidechain_takes_its_source_into_sc_in_folded_to_mono() {
+        let mut c = chain(2, &["pw_hpf", "pw_sccomp"]);
+        c.stages[1].sidechain = keyed("music");
+        let e = engine(
+            vec![c],
+            vec![
+                device("mic", Dir::Out, &["FL", "FR"]),
+                device("spk", Dir::In, &["FL", "FR"]),
+                device("music", Dir::Out, &["FL", "FR"]),
+            ],
+        );
+        let l = show(&e.desired_links());
+        // both sides of a stereo key onto the one port, and nothing else
+        // of the chain's wiring moves
+        assert!(l.contains(&"music:p_FL -> pwfx.voice.sccomp:sc_in".to_string()), "{l:?}");
+        assert!(l.contains(&"music:p_FR -> pwfx.voice.sccomp:sc_in".to_string()), "{l:?}");
+        assert_eq!(l.iter().filter(|x| x.contains("sc_in")).count(), 2);
+        assert!(l.contains(&"pwfx.voice.hpf:out_1 -> pwfx.voice.sccomp:in_1".to_string()));
+        assert!(l.contains(&"pwfx.voice.sccomp:out_2 -> spk:p_FR".to_string()));
+        // a bus is where a key from another chain comes from, so a chain
+        // keyed from one is one of its users
+        let mut e = e;
+        e.state.chains[0].stages[1].sidechain = keyed("pwfx.bus.duck");
+        let bus = Bus {
+            id: "duck".into(),
+            name: "Duck".into(),
+            enabled: true,
+            width: 1,
+            kind: BusKind::Source,
+            apps: vec![],
+        };
+        assert_eq!(e.bus_uses(&bus), [("Voice".to_string(), false)]);
+    }
+
+    #[test]
+    fn a_sidechain_links_nothing_it_cannot() {
+        let nodes = || {
+            vec![
+                device("mic", Dir::Out, &["MONO"]),
+                device("spk", Dir::In, &["FL", "FR"]),
+                device("music", Dir::Out, &["FL", "FR"]),
+            ]
+        };
+        let sc = |e: &Engine| show(&e.desired_links()).into_iter().filter(|x| x.contains("sc_in")).count();
+
+        // a filter with no sc_in: a saved sidechain is kept, never linked
+        let mut c = chain(2, &["pw_comp"]);
+        c.stages[0].sidechain = keyed("music");
+        assert_eq!(sc(&engine(vec![c], nodes())), 0);
+
+        // a source that is not plugged in
+        let mut c = chain(2, &["pw_sccomp"]);
+        c.stages[0].sidechain = keyed("gone");
+        assert_eq!(sc(&engine(vec![c], nodes())), 0);
+
+        // a chain that is switched off
+        let mut c = chain(2, &["pw_sccomp"]);
+        c.stages[0].sidechain = keyed("music");
+        c.enabled = false;
+        assert_eq!(sc(&engine(vec![c.clone()], nodes())), 0);
+        c.enabled = true;
+        assert_eq!(sc(&engine(vec![c], nodes())), 2);
     }
 
     fn device(name: &str, dir: Dir, channels: &[&str]) -> Node {
@@ -781,6 +909,7 @@ mod tests {
                 id,
                 plugin: p.to_string(),
                 bypass: false,
+                sidechain: None,
                 params: BTreeMap::new(),
             });
         }
@@ -969,6 +1098,7 @@ mod tests {
                 id: "ghost".into(),
                 plugin: "pw_nonexistent".into(),
                 bypass: false,
+                sidechain: None,
                 params: BTreeMap::new(),
             },
         );
@@ -1185,6 +1315,7 @@ mod round_trip {
             id: "eq".into(),
             plugin: "pw_eq".into(),
             bypass: false,
+            sidechain: None,
             params: wanted.clone(),
         });
         let node = chain.node_name(&chain.stages[0]);

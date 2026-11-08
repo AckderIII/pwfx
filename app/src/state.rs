@@ -46,6 +46,13 @@ pub struct Stage {
     /// Live parameters only, as the text the filter echoed back.
     #[serde(default)]
     pub params: BTreeMap<String, String>,
+    /// What the filter's sidechain input, `sc_in`, listens to -- for a
+    /// filter that has one (`PluginDesc::sidechain`). Any source a chain's
+    /// input could take, stored the same way, by name; a wider one is
+    /// folded down onto the one mono port as a chain folds onto one
+    /// channel. Kept when the filter is not installed, like `params`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidechain: Option<Endpoint>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -571,6 +578,7 @@ mod tests {
                 id,
                 plugin: p.into(),
                 bypass: false,
+                sidechain: None,
                 params: BTreeMap::new(),
             });
         }
@@ -596,6 +604,7 @@ mod tests {
                     id: "hpf".into(),
                     plugin: "pw_hpf".into(),
                     bypass: true,
+                    sidechain: None,
                     params: [("cutoff".to_string(), "80".to_string())].into(),
                 }],
                 input: Some(Endpoint {
