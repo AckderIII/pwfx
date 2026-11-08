@@ -43,7 +43,8 @@ export struct StageRow {
 /// beside it. The text comes from Rust rather than being formatted here so
 /// that the floor the filters report -- -240 dB, meaning nothing at all --
 /// can be shown as nothing rather than as a number. The gain reduction is
-/// only there for a filter that reports one.
+/// only there for a filter that reports one, and the sidechain's level for a
+/// filter that has a sidechain.
 export struct LevelRow {
     in-db: float,
     in-text: string,
@@ -52,6 +53,9 @@ export struct LevelRow {
     has-gr: bool,
     gr-db: float,
     gr-text: string,
+    has-sc: bool,
+    sc-db: float,
+    sc-text: string,
 }
 
 /// A stage's response curve, laid out by Rust as SVG path data in a fixed
@@ -658,6 +662,14 @@ export component StageCard inherits Rectangle {
                     text: root.level.out-text;
                     live: root.s.running;
                 }
+            }
+            // The key, above the reduction it causes: a level like in and
+            // out, on a row of its own as gr is.
+            if root.level.has-sc : LevelStrip {
+                label: "sc";
+                db: root.level.sc-db;
+                text: root.level.sc-text;
+                live: root.s.running;
             }
             // Its own row, the full width of the two above: it is a
             // different kind of reading, and its figure lines up under the

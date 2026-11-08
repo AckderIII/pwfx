@@ -210,6 +210,37 @@ def main():
             check(e is not None and e.startswith("error:"),
                   "gr is an unknown name here", str(e))
 
+        # sc-level likewise, exactly where there is a sidechain input to
+        # meter: read-only, reported with the levels once armed, and an
+        # unknown name everywhere else.
+        drain(f)
+        has_sc = any(l.split(" ")[0] == "sc-level" for l in dump)
+        want_sc = name == "pw_sccomp"
+        check(has_sc == want_sc, "%s sc-level in the dump" % ("has" if want_sc else "no"))
+        if has_sc:
+            f.send("sc-level 0")
+            e = f.errline(2.0)
+            check(e is not None and e.startswith("error:"),
+                  "rejects a write to sc-level (read-only)", str(e))
+            drain(f)
+            f.set("meter 100")
+            seen, end = 0, time.time() + 1.5
+            while time.time() < end:
+                l = f.line(0.5, skip_comments=True)
+                if l is None:
+                    break
+                if l.split(" ")[0] == "sc-level":
+                    seen += 1
+            check(seen >= 1, "armed meter reports sc-level with the levels",
+                  "%d sc-level lines" % seen)
+            f.set("meter 0")
+            drain(f)
+        else:
+            f.send("sc-level")
+            e = f.errline(2.0)
+            check(e is not None and e.startswith("error:"),
+                  "sc-level is an unknown name here", str(e))
+
         # "curve" is asked for, never sent unasked: one line, by name, with
         # the points in it -- on a filter whose --help offers --curve, and an
         # unknown command on one whose does not.

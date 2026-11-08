@@ -175,6 +175,13 @@ moment it is applied:
 A fully bypassed filter reads 0: it is still computing a gain, but none of
 it reaches the output.
 
+### Sidechain level
+
+`pw_sccomp` has one more meter, `sc-level`: the peak level arriving at
+`sc_in`, in dBFS, reported and held like `in-level`, which does not include
+it. With nothing linked to `sc_in` it reads the -240 floor. The other
+filters have no `sc-level` at all, as they have no `gr`.
+
 Measuring costs almost nothing while `meter` is 0: the realtime thread
 checks one atomic and skips the level scan entirely. The dynamics filters
 keep taking their block's reduction, one comparison per sample in the core,
@@ -234,9 +241,10 @@ Every filter has these on top of its own:
 | `rate` | the graph's sample rate, reported when it changes (read-only) |
 | `latency` | samples of latency this filter adds, reported to the graph (read-only) |
 | `bypass` | pass the input through, crossfaded over 10 ms so it cannot click; a filter with latency keeps it, so bypassing does not move the audio in time |
-| `meter` | how often to report `in-level`, `out-level` and `gr`, in ms; 0 (the default) is off |
+| `meter` | how often to report `in-level`, `out-level`, `gr` and `sc-level`, in ms; 0 (the default) is off |
 | `in-level`, `out-level` | peak level at the input ports, and of the filter's output whether connected or not, in dBFS, floored at -240 (read-only) |
 | `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_sccomp`, `pw_limit`, `pw_deess` and `pw_denoise` only (read-only) |
+| `sc-level` | peak level arriving at the sidechain input, dBFS; `pw_sccomp` only (read-only) |
 | `max-rate` | the highest rate delay lines are sized for at startup (command line only) |
 | `node-name`, `target`, `node-latency` | PipeWire plumbing (command line only) |
 

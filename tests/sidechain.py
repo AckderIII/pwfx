@@ -9,9 +9,11 @@ there, is the one the detector listens to, and is not passed on.
   ports     in_1, in_2, sc_in, out_1, out_2 -- and nothing else
   keyed     a 1 kHz tone at 0.3 on both audio inputs, a 300 Hz key at 0.3
             (-10.46 dBFS peak) on sc_in; threshold -30, ratio 4, hard knee:
-            (30 - 10.46) x 3/4 = 14.66 dB off both channels, and gr says so
+            (30 - 10.46) x 3/4 = 14.66 dB off both channels, and gr says so;
+            sc-level reads the key's -10.46
   unheard   the key's 300 Hz is nowhere in the output
-  unkeyed   the same audio with nothing linked to sc_in: untouched
+  unkeyed   the same audio with nothing linked to sc_in: untouched, and
+            sc-level stays at the floor
 
 Every link is made port by port: a node-to-node pw-link would be free to
 put the audio on sc_in. Each run gets a filter of its own, as live.py's do:
@@ -122,14 +124,16 @@ def window(x):
     return x[start:start + 2 * RATE]
 
 
-def gr_reports(f):
-    got = []
+def reports(f):
+    """The gr and sc-level lines queued up since the last call."""
+    got = {"gr": [], "sc-level": []}
     while True:
         l = f.line(0.2, skip_comments=True)
         if l is None:
             break
-        if l.startswith("gr "):
-            got.append(float(l.split()[1]))
+        k, _, v = l.partition(" ")
+        if k in got:
+            got[k].append(float(v))
     return got
 
 
@@ -152,9 +156,10 @@ def main():
             check(ports == ["in_1", "in_2", "out_1", "out_2", "sc_in"],
                   "ports are in_1 in_2 sc_in out_1 out_2", str(ports))
             f.set("meter 50")
-            gr_reports(f)              # drop the startup dump
+            reports(f)                 # drop the startup dump
             l, r = run(keyed)
-            reports = gr_reports(f)
+            got = reports(f)
+            grs, scs = got["gr"], got["sc-level"]
             if not check(len(l) > 2 * RATE, "%s: audio came through" %
                          ("keyed" if keyed else "unkeyed"), "%d frames" % len(l)):
                 continue
@@ -169,15 +174,22 @@ def main():
                     k = db(tone_amplitude(w, RATE, 300) / 0.3)
                     check(k < -90, "unheard: the key's 300 Hz on channel %s "
                           "at %.1f dB" % (c, k))
+            # held peaks: the highest reading is the one to trust
+            sc = max(scs, default=None)
             if keyed:
-                g = max(reports, default=None)
+                g = max(grs, default=None)
                 check(g is not None and abs(g - WANT_GR) <= 0.5,
                       "keyed: gr %s dB (want %.2f, %d reports)"
-                      % (g, WANT_GR, len(reports)))
+                      % (g, WANT_GR, len(grs)))
+                check(sc is not None and abs(sc - db(0.3)) <= 0.2,
+                      "keyed: sc-level %s dBFS, the key's peak (want %.2f, %d reports)"
+                      % (sc, db(0.3), len(scs)))
             else:
-                check(bool(reports) and max(reports) == 0.0,
+                check(bool(grs) and max(grs) == 0.0,
                       "unkeyed: gr stays at 0 (highest %s)"
-                      % (max(reports) if reports else None))
+                      % (max(grs) if grs else None))
+                check(sc is not None and sc <= -240.0,
+                      "unkeyed: sc-level stays at the floor (highest %s)" % sc)
         finally:
             rc = f.stop()
         check(rc == 0, "exits cleanly on 'quit'", "rc=%s" % rc)

@@ -893,7 +893,14 @@ impl App {
                 chain
                     .stages
                     .iter()
-                    .map(|s| level_row(-240.0, -240.0, has_gr(&e, s).then_some(0.0)))
+                    .map(|s| {
+                        level_row(
+                            -240.0,
+                            -240.0,
+                            has_gr(&e, s).then_some(0.0),
+                            has_sc(&e, s).then_some(-240.0),
+                        )
+                    })
                     .collect::<Vec<_>>(),
             ));
 
@@ -1006,7 +1013,12 @@ impl App {
         for (i, s) in chain.stages.iter().enumerate() {
             let rt = e.runtime(&chain.node_name(s));
             let (a, b) = rt.map(|r| (r.in_level, r.out_level)).unwrap_or((-240.0, -240.0));
-            let row = level_row(a, b, has_gr(&e, s).then(|| rt.map_or(0.0, |r| r.gr)));
+            let row = level_row(
+                a,
+                b,
+                has_gr(&e, s).then(|| rt.map_or(0.0, |r| r.gr)),
+                has_sc(&e, s).then(|| rt.map_or(-240.0, |r| r.sc_level)),
+            );
             if levels.row_data(i).as_ref() != Some(&row) {
                 levels.set_row_data(i, row);
             }
@@ -1020,7 +1032,7 @@ impl App {
 /// so a reading missing from here is a dropdown that cannot be used.
 fn is_meter_reading(p: &ProcEvent) -> bool {
     matches!(p, ProcEvent::Param { name, .. }
-             if matches!(name.as_str(), "in-level" | "out-level" | "gr"))
+             if matches!(name.as_str(), "in-level" | "out-level" | "gr" | "sc-level"))
 }
 
 /// The models the window is bound to, kept alive between refreshes.
@@ -1072,9 +1084,13 @@ impl Models {
 }
 
 /// `gr` is `None` for a filter with no gain-reduction meter, which then
-/// shows no strip for one rather than one that always reads nothing.
-fn level_row(in_db: f32, out_db: f32, gr: Option<f32>) -> LevelRow {
+/// shows no strip for one rather than one that always reads nothing; `sc`
+/// likewise for a filter with no sidechain input.
+fn level_row(in_db: f32, out_db: f32, gr: Option<f32>, sc: Option<f32>) -> LevelRow {
     LevelRow {
+        has_sc: sc.is_some(),
+        sc_db: sc.unwrap_or(-240.0),
+        sc_text: ui::level_text(sc.unwrap_or(-240.0)).into(),
         in_db,
         in_text: ui::level_text(in_db).into(),
         out_db,
@@ -1108,6 +1124,11 @@ fn curve_row(e: &Engine, chain: &Chain, stage: &Stage) -> CurveRow {
 /// with no change here.
 fn has_gr(e: &Engine, stage: &Stage) -> bool {
     e.plugin(&stage.plugin).is_some_and(|d| d.param("gr").is_some())
+}
+
+/// Whether a stage's filter meters a sidechain input, learned the same way.
+fn has_sc(e: &Engine, stage: &Stage) -> bool {
+    e.plugin(&stage.plugin).is_some_and(|d| d.param("sc-level").is_some())
 }
 
 fn strings(v: &[String]) -> ModelRc<SharedString> {
@@ -2297,7 +2318,7 @@ mod window_tests {
             params: ModelRc::new(VecModel::from(params)),
             ..Default::default()
         }])));
-        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-240.0, -240.0, None)])));
+        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-240.0, -240.0, None, None)])));
         win
     }
 
@@ -2550,6 +2571,11 @@ mod window_tests {
             name: "gr".into(),
             value: "6.0".into(),
         }));
+        assert!(is_meter_reading(&ProcEvent::Param {
+            node: "pwfx.voice.duck".into(),
+            name: "sc-level".into(),
+            value: "-12.0".into(),
+        }));
 
         let mut st = state::AppState::default();
         st.buses.push(Bus {
@@ -2733,7 +2759,7 @@ mod window_tests {
         settle(&win).await;
         assert_eq!(captions(&win), ["in", "out"]);
 
-        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-12.0, -20.0, Some(8.0))])));
+        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-12.0, -20.0, Some(8.0), None)])));
         settle(&win).await;
         assert_eq!(captions(&win), ["in", "out", "gr"]);
         let figures: Vec<String> = testing::ElementHandle::find_by_element_id(&win, "LevelStrip::figure")
@@ -2763,6 +2789,21 @@ mod window_tests {
         let right = |e: &testing::ElementHandle| e.absolute_position().x + e.size().width;
         assert!((right(&out_fig) - right(&gr_fig)).abs() < 0.5,
                 "the gr figure lines up under the out figure");
+
+        // A sidechain filter adds the key's level, between the levels and
+        // the reduction it causes, and its figure in the same column.
+        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(
+            -12.0,
+            -20.0,
+            Some(8.0),
+            Some(-6.5),
+        )])));
+        settle(&win).await;
+        assert_eq!(captions(&win), ["in", "out", "sc", "gr"]);
+        let (sc, gr) = (by_caption("sc"), by_caption("gr"));
+        assert!(sc.absolute_position().y < gr.absolute_position().y, "sc sits above gr");
+        assert!((right(&figure("-6.5")) - right(&figure("-20.0"))).abs() < 0.5,
+                "the sc figure lines up under the out figure");
         win.hide().unwrap();
     }
 

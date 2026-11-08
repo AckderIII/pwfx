@@ -114,7 +114,7 @@ through that, or a controller parsing stdout breaks. Multi-line help text is why
 reintroduce a code path that writes without a newline and expects it to arrive.
 
 **It is also event-driven — a line appears because something changed or was
-asked for.** `in-level`/`out-level`/`gr` are the sole exception and are therefore
+asked for.** `in-level`/`out-level`/`gr`/`sc-level` are the sole exception and are therefore
 off by default (`meter 0`), so a consumer that never asks for them sees the
 stream it saw before they existed; `tests/protocol.py` guards both halves of
 that. Anything else periodic must be opt-in the same way. A change may emit
@@ -172,7 +172,9 @@ and passes its input through at any other rate.
 **`pw_sccomp` is `pw_comp` with a key, and has no reference of its own.**
 A filter that sets `pwf_desc.sidechain` gets one more input port, `sc_in`,
 mono, which `process()` finds at `in[channels]` -- silence while unlinked,
-not metered, not in the bypass's dry signal, not counted in `channels`.
+not in `in-level`, not in the bypass's dry signal, not counted in
+`channels`; it has a meter of its own, `sc-level`, which -- like `gr` --
+`core_shown()` gives only to a filter that has the port.
 `comp_run()` takes it as `key` (NULL for `pw_comp`, whose arithmetic is
 untouched): one detector over the key, one gain for every channel. Since
 that is exactly what the original computes when its loudest channel is the
@@ -414,7 +416,7 @@ Two consequences to keep in mind:
 - **Hand a dropdown a new list only when the list changed.** A new options
   model rebuilds an open popup under the pointer: it flickers and the click is
   lost. Every list in `refresh()` is compared against a key in `Models` first,
-  and `is_meter_reading()` keeps meter lines -- `gr` included -- from causing a
+  and `is_meter_reading()` keeps meter lines -- `gr` and `sc-level` included -- from causing a
   full refresh at all. `a_refresh_leaves_lists_that_did_not_change_alone`
   drives the real `refresh()` and fails on either.
   `Picker` *inherits* `ComboBox` rather than wrapping one, because a wrapper

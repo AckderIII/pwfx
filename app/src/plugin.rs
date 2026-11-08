@@ -594,6 +594,14 @@ mod against_the_real_filters {
             // A sidechain input on the sidechain compressor and nothing
             // else: the stage card offers a source for it off this.
             assert_eq!(d.sidechain, d.name == "pw_sccomp", "{}: sc_in in its help", d.name);
+            // and a meter for it there, read-only, and nowhere else
+            match d.param("sc-level") {
+                Some(sc) => {
+                    assert!(d.sidechain, "{} has an sc-level meter", d.name);
+                    assert!(sc.readonly && !sc.live());
+                }
+                None => assert!(!d.sidechain, "{} has no sc-level meter", d.name),
+            }
 
             // A gain-reduction meter on exactly the filters that reduce
             // gain, read-only and so never a knob. The window draws the

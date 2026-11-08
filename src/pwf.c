@@ -49,7 +49,7 @@
 
 enum {
     C_CHANNELS, C_RATE, C_LATENCY, C_BYPASS,
-    C_METER, C_IN_LEVEL, C_OUT_LEVEL, C_GR,
+    C_METER, C_IN_LEVEL, C_OUT_LEVEL, C_GR, C_SC_LEVEL,
     C_MAX_RATE, C_NODE_NAME, C_TARGET, C_NODE_LATENCY,
     C_N
 };
@@ -68,7 +68,7 @@ static const pwf_param core_template[C_N] = {
       .help = "pass the input through, crossfaded over 10 ms" },
     { .name = "meter", .type = PWF_INT,
       .min = 0, .max = 10000, .def = 0, .unit = "ms",
-      .help = "how often to report in-level, out-level and gr, 0 = off" },
+      .help = "how often to report the levels and gr, 0 = off" },
     { .name = "in-level", .type = PWF_DOUBLE,
       .min = PWF_DB_FLOOR, .max = 60, .def = PWF_DB_FLOOR,
       .flags = PWF_F_RO, .unit = "dB",
@@ -82,6 +82,11 @@ static const pwf_param core_template[C_N] = {
       .min = 0, .max = -PWF_DB_FLOOR, .def = 0,
       .flags = PWF_F_RO, .unit = "dB",
       .help = "peak gain reduction being applied, dB" },
+    /* Only on filters with a sidechain input; see core_shown(). */
+    { .name = "sc-level", .type = PWF_DOUBLE,
+      .min = PWF_DB_FLOOR, .max = 60, .def = PWF_DB_FLOOR,
+      .flags = PWF_F_RO, .unit = "dB",
+      .help = "peak level arriving at the sidechain input, dBFS" },
     { .name = "max-rate", .type = PWF_INT,
       .min = 8000, .max = 768000, .def = 192000, .flags = PWF_F_CLI, .unit = "Hz",
       .help = "highest rate to size delay lines for, at startup" },
@@ -134,6 +139,7 @@ struct pwf {
     _Atomic uint32_t rt_in_level;   /* float bits, dBFS */
     _Atomic uint32_t rt_out_level;  /* float bits, dBFS */
     _Atomic uint32_t rt_gr;         /* float bits, dB of reduction */
+    _Atomic uint32_t rt_sc_level;   /* float bits, dBFS, sidechain input */
     _Atomic uint32_t rt_fall;       /* float bits, dB of fallback per sample */
     struct spa_source *meter_timer;
 
@@ -165,6 +171,7 @@ struct pwf {
     double   rt_mix;                /* 1 = fully processed, 0 = fully dry */
     double   rt_in_db, rt_out_db;   /* held peaks */
     double   rt_gr_db;              /* held gain reduction */
+    double   rt_sc_db;              /* held sidechain peak */
 
     int meter_first;                /* report once on arming, even if idle */
     int started;                    /* past the initial parameter dump */
@@ -173,13 +180,16 @@ struct pwf {
 
 /* ---- parameter table helpers ------------------------------------------ */
 
-/* Whether a core parameter exists for this filter. All of them do but "gr",
- * which only a filter with a gain_reduction callback has: a gain-reduction
- * meter on a low-pass would be a parameter that is always 0, and the app
- * would draw a meter for it. */
+/* Whether a core parameter exists for this filter. All of them do but two
+ * meters: "gr", which only a filter with a gain_reduction callback has -- a
+ * gain-reduction meter on a low-pass would be a parameter that is always 0,
+ * and the app would draw a meter for it -- and "sc-level", which only a
+ * filter with a sidechain input has, for the same reason. */
 static int core_shown(const struct pwf *s, size_t i)
 {
-    return i != C_GR || s->desc->gain_reduction != NULL;
+    if (i == C_GR)       return s->desc->gain_reduction != NULL;
+    if (i == C_SC_LEVEL) return s->desc->sidechain != 0;
+    return 1;
 }
 
 static size_t table_len(const pwf_param *p)
@@ -259,18 +269,21 @@ static int refresh_meters(struct pwf *s)
     double in  = u2f(atomic_load_explicit(&s->rt_in_level,  memory_order_relaxed));
     double out = u2f(atomic_load_explicit(&s->rt_out_level, memory_order_relaxed));
     double gr  = u2f(atomic_load_explicit(&s->rt_gr,        memory_order_relaxed));
+    double sc  = u2f(atomic_load_explicit(&s->rt_sc_level,  memory_order_relaxed));
 
     in  = round(in  * 10.0) / 10.0;
     out = round(out * 10.0) / 10.0;
     gr  = round(gr  * 10.0) / 10.0;
+    sc  = round(sc  * 10.0) / 10.0;
 
     if (in == s->core[C_IN_LEVEL].value && out == s->core[C_OUT_LEVEL].value &&
-        gr == s->core[C_GR].value)
+        gr == s->core[C_GR].value && sc == s->core[C_SC_LEVEL].value)
         return 0;
 
     s->core[C_IN_LEVEL].value  = in;
     s->core[C_OUT_LEVEL].value = out;
     s->core[C_GR].value        = gr;
+    s->core[C_SC_LEVEL].value  = sc;
     return 1;
 }
 
@@ -457,6 +470,7 @@ static void on_meter_timer(void *data, uint64_t expirations)
     report(&s->core[C_IN_LEVEL]);
     report(&s->core[C_OUT_LEVEL]);
     if (core_shown(s, C_GR)) report(&s->core[C_GR]);
+    if (core_shown(s, C_SC_LEVEL)) report(&s->core[C_SC_LEVEL]);
 }
 
 /* The scalars the data thread reads outside the coefficient blob. All of
@@ -609,7 +623,7 @@ static void command(struct pwf *s, char *line)
         }
         if ((par = find_param(s, name)) != NULL) {
             if (par == &s->core[C_IN_LEVEL] || par == &s->core[C_OUT_LEVEL] ||
-                par == &s->core[C_GR])
+                par == &s->core[C_GR] || par == &s->core[C_SC_LEVEL])
                 refresh_meters(s);
             report(par);
             return;
@@ -727,7 +741,7 @@ static void on_process(void *data, struct spa_io_position *position)
     float *in[PWF_MAX_CHANNELS + 1], *out[PWF_MAX_CHANNELS];
     const void *coeffs;
     int changed, meter;
-    float ipk = 0.0f, opk = 0.0f;
+    float ipk = 0.0f, opk = 0.0f, spk = 0.0f;
     double grpk = 0.0, tgt, inc;
 
     if (total == 0) return;
@@ -788,13 +802,20 @@ static void on_process(void *data, struct spa_io_position *position)
         }
 
         /* An unconnected input reads from the shared silence buffer, which
-         * is not a level anyone sent, so in-level skips it. */
+         * is not a level anyone sent, so in-level skips it -- and sc-level
+         * likewise, which has a port of its own and a meter of its own. */
         if (meter) {
             for (i = 0; i < nch; i++) {
                 if (!base_in[i]) continue;
                 for (j = 0; j < n; j++) {
                     float a = fabsf(in[i][j]);
                     if (a > ipk) ipk = a;
+                }
+            }
+            if (base_in[nch]) {
+                for (j = 0; j < n; j++) {
+                    float a = fabsf(in[nch][j]);
+                    if (a > spk) spk = a;
                 }
             }
         }
@@ -869,6 +890,11 @@ static void on_process(void *data, struct spa_io_position *position)
                               memory_order_relaxed);
         atomic_store_explicit(&s->rt_out_level, f2u((float)s->rt_out_db),
                               memory_order_relaxed);
+        if (s->sc) {
+            s->rt_sc_db = meter_step(s->rt_sc_db, spk, fall);
+            atomic_store_explicit(&s->rt_sc_level, f2u((float)s->rt_sc_db),
+                                  memory_order_relaxed);
+        }
 
         /* The same hold and fallback, upside down: reduction is a positive
          * number of dB and falls back towards 0. A bypassed filter goes on
@@ -1217,11 +1243,12 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
     atomic_init(&s.rt_xfade, 1);
     s.rt_last_pub = UINT32_MAX;
     s.rt_mix = 1.0;
-    s.rt_in_db = s.rt_out_db = PWF_DB_FLOOR;
+    s.rt_in_db = s.rt_out_db = s.rt_sc_db = PWF_DB_FLOOR;
     atomic_init(&s.rt_meter, 0);
     atomic_init(&s.rt_in_level,  f2u((float)PWF_DB_FLOOR));
     atomic_init(&s.rt_out_level, f2u((float)PWF_DB_FLOOR));
     atomic_init(&s.rt_gr, f2u(0.0f));
+    atomic_init(&s.rt_sc_level, f2u((float)PWF_DB_FLOOR));
     atomic_init(&s.rt_fall, f2u(0.0f));
 
     if ((res = parse_argv(&s, argc, argv, &check)) != 0)

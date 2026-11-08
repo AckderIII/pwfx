@@ -71,6 +71,8 @@ pub struct Runtime {
     pub out_level: f32,
     /// Gain reduction, dB >= 0, from filters that have a `gr` meter.
     pub gr: f32,
+    /// The sidechain input's peak, dBFS, from filters that have one.
+    pub sc_level: f32,
     /// The response the filter last reported, for filters that draw one.
     pub curve: Option<Curve>,
     /// Something it reported may have moved the curve, which it has not
@@ -547,13 +549,14 @@ impl Engine {
                 // Any value the filter reports can move its curve -- a
                 // parameter, the rate, the startup dump -- and the meters
                 // and the curve itself cannot.
-                if !matches!(name.as_str(), "in-level" | "out-level" | "gr" | "curve") {
+                if !matches!(name.as_str(), "in-level" | "out-level" | "gr" | "sc-level" | "curve") {
                     rt.curve_stale = true;
                 }
                 match name.as_str() {
                     "in-level" => rt.in_level = value.parse().unwrap_or(-240.0),
                     "out-level" => rt.out_level = value.parse().unwrap_or(-240.0),
                     "gr" => rt.gr = value.parse().unwrap_or(0.0),
+                    "sc-level" => rt.sc_level = value.parse().unwrap_or(-240.0),
                     "curve" => rt.curve = Curve::parse(&value),
                     "latency" => {
                         rt.latency = value.parse().unwrap_or(0);
