@@ -898,6 +898,7 @@ impl App {
                             -240.0,
                             -240.0,
                             has_gr(&e, s).then_some(0.0),
+                            has_gain(&e, s).then_some(0.0),
                             has_sc(&e, s).then_some(-240.0),
                         )
                     })
@@ -1017,6 +1018,7 @@ impl App {
                 a,
                 b,
                 has_gr(&e, s).then(|| rt.map_or(0.0, |r| r.gr)),
+                has_gain(&e, s).then(|| rt.map_or(0.0, |r| r.gain)),
                 has_sc(&e, s).then(|| rt.map_or(-240.0, |r| r.sc_level)),
             );
             if levels.row_data(i).as_ref() != Some(&row) {
@@ -1032,7 +1034,8 @@ impl App {
 /// so a reading missing from here is a dropdown that cannot be used.
 fn is_meter_reading(p: &ProcEvent) -> bool {
     matches!(p, ProcEvent::Param { name, .. }
-             if matches!(name.as_str(), "in-level" | "out-level" | "gr" | "sc-level"))
+             if matches!(name.as_str(),
+                         "in-level" | "out-level" | "gr" | "gain-applied" | "sc-level"))
 }
 
 /// The models the window is bound to, kept alive between refreshes.
@@ -1084,10 +1087,20 @@ impl Models {
 }
 
 /// `gr` is `None` for a filter with no gain-reduction meter, which then
-/// shows no strip for one rather than one that always reads nothing; `sc`
-/// likewise for a filter with no sidechain input.
-fn level_row(in_db: f32, out_db: f32, gr: Option<f32>, sc: Option<f32>) -> LevelRow {
+/// shows no strip for one rather than one that always reads nothing; `gain`
+/// likewise for a filter with no signed gain meter, and `sc` for one with no
+/// sidechain input.
+fn level_row(
+    in_db: f32,
+    out_db: f32,
+    gr: Option<f32>,
+    gain: Option<f32>,
+    sc: Option<f32>,
+) -> LevelRow {
     LevelRow {
+        has_gain: gain.is_some(),
+        gain_db: gain.unwrap_or(0.0),
+        gain_text: ui::gain_text(gain.unwrap_or(0.0)).into(),
         has_sc: sc.is_some(),
         sc_db: sc.unwrap_or(-240.0),
         sc_text: ui::level_text(sc.unwrap_or(-240.0)).into(),
@@ -1124,6 +1137,13 @@ fn curve_row(e: &Engine, chain: &Chain, stage: &Stage) -> CurveRow {
 /// with no change here.
 fn has_gr(e: &Engine, stage: &Stage) -> bool {
     e.plugin(&stage.plugin).is_some_and(|d| d.param("gr").is_some())
+}
+
+/// Whether a stage's filter meters the gain it applies, signed -- one that
+/// turns up as well as down, which a gr strip cannot show. Learned the same
+/// way.
+fn has_gain(e: &Engine, stage: &Stage) -> bool {
+    e.plugin(&stage.plugin).is_some_and(|d| d.param("gain-applied").is_some())
 }
 
 /// Whether a stage's filter meters a sidechain input, learned the same way.
@@ -2318,7 +2338,7 @@ mod window_tests {
             params: ModelRc::new(VecModel::from(params)),
             ..Default::default()
         }])));
-        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-240.0, -240.0, None, None)])));
+        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-240.0, -240.0, None, None, None)])));
         win
     }
 
@@ -2576,6 +2596,11 @@ mod window_tests {
             name: "sc-level".into(),
             value: "-12.0".into(),
         }));
+        assert!(is_meter_reading(&ProcEvent::Param {
+            node: "pwfx.voice.level".into(),
+            name: "gain-applied".into(),
+            value: "5.5".into(),
+        }));
 
         let mut st = state::AppState::default();
         st.buses.push(Bus {
@@ -2759,7 +2784,7 @@ mod window_tests {
         settle(&win).await;
         assert_eq!(captions(&win), ["in", "out"]);
 
-        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-12.0, -20.0, Some(8.0), None)])));
+        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(-12.0, -20.0, Some(8.0), None, None)])));
         settle(&win).await;
         assert_eq!(captions(&win), ["in", "out", "gr"]);
         let figures: Vec<String> = testing::ElementHandle::find_by_element_id(&win, "LevelStrip::figure")
@@ -2796,6 +2821,7 @@ mod window_tests {
             -12.0,
             -20.0,
             Some(8.0),
+            None,
             Some(-6.5),
         )])));
         settle(&win).await;
@@ -2804,6 +2830,27 @@ mod window_tests {
         assert!(sc.absolute_position().y < gr.absolute_position().y, "sc sits above gr");
         assert!((right(&figure("-6.5")) - right(&figure("-20.0"))).abs() < 0.5,
                 "the sc figure lines up under the out figure");
+
+        // A leveler has a signed gain where gr would be: the same row, the
+        // same columns, and a boost printed as one.
+        win.set_levels(ModelRc::new(VecModel::from(vec![level_row(
+            -12.0,
+            -20.0,
+            None,
+            Some(5.46),
+            None,
+        )])));
+        settle(&win).await;
+        assert_eq!(captions(&win), ["in", "out", "gain"]);
+        let (inn, gain) = (by_caption("in"), by_caption("gain"));
+        assert!(gain.absolute_position().y >= inn.absolute_position().y + inn.size().height,
+                "gain sits below in and out");
+        assert_eq!(gain.absolute_position().x, inn.absolute_position().x);
+        assert!((right(&figure("+5.5")) - right(&figure("-20.0"))).abs() < 0.5,
+                "the gain figure lines up under the out figure");
+        // and the caption fits the column every other strip's does, so the
+        // bars start where the others do
+        assert!(gain.size().width <= by_caption("out").size().width + 0.5);
         win.hide().unwrap();
     }
 
@@ -3115,6 +3162,7 @@ mod render {
                 stage("comp", "pw_comp", &[("threshold", "-24"), ("ratio", "3"), ("knee", "6"),
                                            ("makeup", "6")]),
                 stage("gate", "pw_gate", &[("threshold", "-45"), ("hysteresis", "6"), ("range", "30")]),
+                stage("level", "pw_level", &[("loudness", "-18"), ("max-boost", "12")]),
             ],
             input: None,
             output: None,
@@ -3127,6 +3175,7 @@ mod render {
                                          "--ls-freq", "200", "--ls-gain", "-3"][..]),
             ("pwfx.voice.comp", "pw_comp", &["-t", "-24", "-R", "3", "-w", "6", "-m", "6"][..]),
             ("pwfx.voice.gate", "pw_gate", &["-t", "-45", "-T", "6", "-g", "30"][..]),
+            ("pwfx.voice.level", "pw_level", &["-l", "-18", "-B", "12"][..]),
         ] {
             let rt = engine.runtime_mut(node);
             rt.running = true;

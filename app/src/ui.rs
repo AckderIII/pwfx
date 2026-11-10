@@ -129,6 +129,17 @@ pub fn gr_text(db: f32) -> String {
     }
 }
 
+/// The figure printed beside a gain meter: signed, since a leveler turns
+/// up as readily as it turns down, so a boost reads `+5.4` and a cut
+/// `-12.5`. No gain is a reading, printed as one, and never as `-0.0`.
+pub fn gain_text(db: f32) -> String {
+    if !db.is_finite() || db.abs() < 0.05 {
+        "0.0".into()
+    } else {
+        format!("{db:+.1}")
+    }
+}
+
 /// A response curve laid out for drawing: SVG path data in a fixed viewbox
 /// -- `CURVE_W` wide, `CURVE_FREQ_H` or `CURVE_W` tall -- and the figures for
 /// the axes. Plain data, so the window can compare it and leave an unchanged
@@ -370,6 +381,12 @@ mod tests {
 
     #[test]
     fn gain_reduction_reads_as_a_cut() {
+        assert_eq!(gain_text(5.46), "+5.5");
+        assert_eq!(gain_text(-12.55), "-12.6");
+        assert_eq!(gain_text(-0.04), "0.0");
+        assert_eq!(gain_text(0.0), "0.0");
+        assert_eq!(gain_text(f32::NAN), "0.0");
+        assert!(gain_text(-30.0).len() <= 6);
         assert_eq!(gr_text(14.66), "-14.7");
         assert_eq!(gr_text(0.0), "0.0");
         // Under what the filter's own rounding can report: no reduction,

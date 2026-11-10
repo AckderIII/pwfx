@@ -149,6 +149,38 @@ export component GrMeter inherits Rectangle {
     }
 }
 
+// The gain a leveler is applying, which goes both ways: a bar from the
+// middle, right for a boost and left for a cut, over 24 dB each side like the
+// gr strip, in the accent colour for the same reason -- it is a gain, not a
+// level. A tick marks 0 dB, where a leveler with nothing to do sits.
+export component GainMeter inherits Rectangle {
+    in property <float> db: 0;
+    in property <bool> live: false;
+
+    property <float> norm: max(-1, min(1, root.db / 24));
+
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.bg-sunken;
+    clip: true;
+
+    Rectangle {
+        x: parent.width * (0.5 + min(0, root.norm) / 2);
+        width: parent.width * abs(root.norm) / 2;
+        height: 100%;
+        border-radius: 3px;
+        background: root.live ? Theme.accent : Theme.text-faint;
+        animate x, width { duration: 60ms; easing: ease-out; }
+    }
+
+    Rectangle {
+        x: parent.width * 0.5;
+        width: 1px;
+        height: 100%;
+        background: Theme.text-faint;
+    }
+}
+
 export component Meter inherits Rectangle {
     in property <float> db: -240;
     in property <bool> live: false;

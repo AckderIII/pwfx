@@ -2,12 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Eleven audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
-`pw_sccomp`, `pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`, `pw_denoise`),
-each a standalone PipeWire filter node built on `pw_filter`; all but
-`pw_gain` with a raw stdin/stdout reference implementation in `reference/`
-behind them -- the first six ported from theirs, `pw_delay`, `pw_deess` and
-`pw_denoise` written here together with their own, `pw_sccomp` held to
+Twelve audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
+`pw_sccomp`, `pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`, `pw_denoise`,
+`pw_level`), each a standalone PipeWire filter node built on `pw_filter`;
+all but `pw_gain` with a raw stdin/stdout reference implementation in
+`reference/` behind them -- the first six ported from theirs, `pw_delay`,
+`pw_deess`, `pw_denoise` and `pw_level` written here together with their
+own, `pw_sccomp` held to
 `pw_comp`'s -- and `pw_gain` with none; plus
 `app/`, a Rust and Slint desktop app that drives them as plugins.
 
@@ -90,6 +91,12 @@ opted in -- `core_shown()` hides it from the dump, `--help` and lookups
 everywhere else -- because the app draws a meter for every filter that lists
 one.
 
+`gain-applied` is the same path for a filter that turns up as well as down
+(`pw_level`), which `gr` -- a reduction, >= 0, held at its peak -- cannot
+show. A filter opts in with `pwf_desc.gain_applied`; the value is signed and
+not held, the gain at the end of the last block, and like `gr` it exists
+only where a filter opted in. The app draws it as a strip from the middle.
+
 Consequences for any new code:
 
 - **Never allocate, lock or block in `process()`.** Anything whose size depends
@@ -114,7 +121,7 @@ through that, or a controller parsing stdout breaks. Multi-line help text is why
 reintroduce a code path that writes without a newline and expects it to arrive.
 
 **It is also event-driven — a line appears because something changed or was
-asked for.** `in-level`/`out-level`/`gr`/`sc-level` are the sole exception and are therefore
+asked for.** `in-level`/`out-level`/`gr`/`gain-applied`/`sc-level` are the sole exception and are therefore
 off by default (`meter 0`), so a consumer that never asks for them sees the
 stream it saw before they existed; `tests/protocol.py` guards both halves of
 that. Anything else periodic must be opt-in the same way. A change may emit
@@ -190,6 +197,27 @@ picks which input gets what, and uses a fresh filter per run: a node left
 on a real device's clock rate-matches the next run's test streams off
 pitch.
 
+**`pw_level` gates per 5 ms hop, twice, and the relative gate's reference
+is the last few seconds, not the window -- keep all three.** Each was forced
+by `tests/level.py`. Gating the window as a whole read the end of every
+phrase as the speaker fading (the window filling with pause), so the gain
+climbed into every pause and overshot at every onset; hops under the gate
+are therefore left out of the window's average, and the gain freezes only
+when no hop in it passed. A hop counts whole however quiet, so a filter's
+tail or a room just over the absolute gate still dragged the reading down:
+hence a relative gate, 20 dB (a 5 ms hop of speech swings far wider than
+BS.1770's 400 ms blocks, and 10 would drop consonants). And relative to
+the window's own mean it did nothing in a long pause -- a window of pure
+room is its own reference -- while the voice's room noise moves with the
+voice, so no fixed gate suits the same speech 20 dB apart: the reference
+is a 5 s mean of the hops that passed the absolute gate, and the same
+speech then settles 19.9 dB apart for 20 at any gate under the voice.
+The cost, documented: what is ridden to is the loudness of sound while it
+sounds, so BS.1770 *integrated* reads levelled speech 1-2 dB under the
+target. Its K-weighting is designed from the analogue prototypes for any
+rate, and the test checks it against the standard's published 48 kHz
+coefficients, not against the C.
+
 **Except `pw_delay`, which reports 0 on purpose.** Its delay is the effect, not
 processing it needs: reported, the graph would compensate it away, and lining
 one source up with another is the whole point of a plain delay. Do not "fix"
@@ -205,7 +233,7 @@ apart than one.
 same coefficients, same transposed direct form II, same double-precision state,
 same denormal flushing. `make test` proves it by running each filter's actual
 core through the reference's stream handling and `cmp`-ing against the reference
-binary — currently 66 cases (plus `tests/sccomp.py`'s twelve) across orders, block sizes, sidechain settings and
+binary — currently 75 cases (plus `tests/sccomp.py`'s twelve) across orders, block sizes, sidechain settings and
 edges, all byte-identical, plus four that drive the limiter hard into its
 ceiling and insist the breach count stays zero.
 
@@ -219,7 +247,8 @@ absorb-and-flush (drop the first L outputs, feed L frames of silence at EOF)
 around the same code so the two streams line up. `pw_lpf`/`pw_hpf`/`pw_eq` have
 no delay line and use `src/dsp.h` directly. `pw_deess` is the de-esser's
 core in `deess_dsp.h`, absorbed in `tests/t_deess.c` like the gate's.
-`pw_delay` keeps its core in
+`pw_level` likewise, in `level_dsp.h` and `tests/t_level.c`, whose `-v`
+prints the core's gain per block for `tests/level.py`. `pw_delay` keeps its core in
 `delay_dsp.h` too, but needs no absorbing: the delay is its output in the
 reference as well, and `tests/impulse.py` checks the impulse response the two
 agree on against theory.
@@ -317,7 +346,7 @@ it that way: an edit made around `edit` is an edit that cannot be undone.
 
 **The AppImage bundles nothing but the binaries** (`packaging/appimage/`). Every
 binary links only libc, libm, libgcc_s and libpipewire, and the GUI loads its
-display libraries at runtime, so the AppDir is the twelve executables, a
+display libraries at runtime, so the AppDir is the thirteen executables, a
 `.desktop` file, an icon and RNNoise's licence, which its BSD terms ask for
 in binary distributions too. `libpipewire` must stay the host's: it loads its
 own modules from the host's paths. `inside.sh` fails the build if a binary
@@ -416,7 +445,7 @@ Two consequences to keep in mind:
 - **Hand a dropdown a new list only when the list changed.** A new options
   model rebuilds an open popup under the pointer: it flickers and the click is
   lost. Every list in `refresh()` is compared against a key in `Models` first,
-  and `is_meter_reading()` keeps meter lines -- `gr` and `sc-level` included -- from causing a
+  and `is_meter_reading()` keeps meter lines -- `gr`, `gain-applied` and `sc-level` included -- from causing a
   full refresh at all. `a_refresh_leaves_lists_that_did_not_change_alone`
   drives the real `refresh()` and fails on either.
   `Picker` *inherits* `ComboBox` rather than wrapping one, because a wrapper

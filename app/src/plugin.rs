@@ -603,6 +603,16 @@ mod against_the_real_filters {
                 None => assert!(!d.sidechain, "{} has no sc-level meter", d.name),
             }
 
+            // A signed gain meter on the leveler, the one filter that turns
+            // up as well as down, read-only, and on nothing else.
+            match d.param("gain-applied") {
+                Some(g) => {
+                    assert_eq!(d.name, "pw_level", "{} has a gain-applied meter", d.name);
+                    assert!(g.readonly && !g.live());
+                }
+                None => assert_ne!(d.name, "pw_level", "pw_level has no gain-applied meter"),
+            }
+
             // A gain-reduction meter on exactly the filters that reduce
             // gain, read-only and so never a knob. The window draws the
             // strip off this, so it must not appear on a low-pass.
@@ -667,6 +677,21 @@ mod against_the_real_filters {
                 comp.param("auto-makeup").unwrap().kind,
                 ParamKind::Bool
             ));
+        }
+        if let Some(level) = by_name("pw_level") {
+            // Loudness in LUFS is a dB scale with another name: linear
+            // sliders, and the unit carried through to the knob.
+            for n in ["loudness", "gate"] {
+                let p = level.param(n).unwrap();
+                assert_eq!(p.unit.as_deref(), Some("LUFS"));
+                assert!(!p.logarithmic(), "{n} is a level already");
+            }
+            // Its times span three decades, from a test's 10 ms to a
+            // broadcast ride's half a minute.
+            for n in ["attack", "release"] {
+                assert!(level.param(n).unwrap().logarithmic(), "{n} needs a log slider");
+            }
+            assert!(level.curve);
         }
         if let Some(limit) = by_name("pw_limit") {
             match &limit.param("oversample").unwrap().kind {

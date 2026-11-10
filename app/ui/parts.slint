@@ -1,4 +1,4 @@
-import { Theme, Btn, Toggle, Meter, GrMeter } from "theme.slint";
+import { Theme, Btn, Toggle, Meter, GrMeter, GainMeter } from "theme.slint";
 import { Slider, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
 
 // One knob of one filter.
@@ -43,8 +43,9 @@ export struct StageRow {
 /// beside it. The text comes from Rust rather than being formatted here so
 /// that the floor the filters report -- -240 dB, meaning nothing at all --
 /// can be shown as nothing rather than as a number. The gain reduction is
-/// only there for a filter that reports one, and the sidechain's level for a
-/// filter that has a sidechain.
+/// only there for a filter that reports one, the signed gain for a filter
+/// that turns up as well as down, and the sidechain's level for a filter
+/// that has a sidechain.
 export struct LevelRow {
     in-db: float,
     in-text: string,
@@ -53,6 +54,9 @@ export struct LevelRow {
     has-gr: bool,
     gr-db: float,
     gr-text: string,
+    has-gain: bool,
+    gain-db: float,
+    gain-text: string,
     has-sc: bool,
     sc-db: float,
     sc-text: string,
@@ -165,7 +169,8 @@ component NumberEditor inherits HorizontalLayout {
         color: Theme.text-faint;
         font-size: Theme.fs-small;
         vertical-alignment: center;
-        width: 24px;
+        // wide enough for "LUFS", the longest unit a filter has
+        width: 32px;
     }
 }
 
@@ -397,6 +402,8 @@ component LevelStrip inherits HorizontalLayout {
     in property <bool> live;
     // A gain-reduction strip rather than a level: dB pulled down, not dBFS.
     in property <bool> reduction: false;
+    // A signed gain strip: dB up or down, from the middle.
+    in property <bool> gain: false;
 
     spacing: 6px;
 
@@ -407,13 +414,19 @@ component LevelStrip inherits HorizontalLayout {
         color: Theme.text-faint;
         vertical-alignment: center;
     }
-    if !root.reduction : Meter {
+    if !root.reduction && !root.gain : Meter {
         horizontal-stretch: 1;
         y: 6px;
         db: root.db;
         live: root.live;
     }
     if root.reduction : GrMeter {
+        horizontal-stretch: 1;
+        y: 6px;
+        db: root.db;
+        live: root.live;
+    }
+    if root.gain : GainMeter {
         horizontal-stretch: 1;
         y: 6px;
         db: root.db;
@@ -427,8 +440,8 @@ component LevelStrip inherits HorizontalLayout {
         width: 40px;
         font-family: "monospace";
         font-size: Theme.fs-small;
-        color: root.reduction ? (root.live ? Theme.accent : Theme.text-faint)
-                              : Theme.level-color(root.db, root.live);
+        color: root.reduction || root.gain ? (root.live ? Theme.accent : Theme.text-faint)
+                                           : Theme.level-color(root.db, root.live);
         horizontal-alignment: right;
         vertical-alignment: center;
     }
@@ -679,6 +692,15 @@ export component StageCard inherits Rectangle {
                 reduction: true;
                 db: root.level.gr-db;
                 text: root.level.gr-text;
+                live: root.s.running && !root.s.bypass;
+            }
+            // Where gr would be, for a filter that turns up as well as
+            // down: the same row, read from the middle.
+            if root.level.has-gain : LevelStrip {
+                label: "gain";
+                gain: true;
+                db: root.level.gain-db;
+                text: root.level.gain-text;
                 live: root.s.running && !root.s.bypass;
             }
         }

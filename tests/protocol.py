@@ -210,6 +210,39 @@ def main():
             check(e is not None and e.startswith("error:"),
                   "gr is an unknown name here", str(e))
 
+        # gain-applied likewise, exactly where a filter turns up as well as
+        # down: signed, read-only, reported with the levels once armed, and
+        # an unknown name everywhere else.
+        drain(f)
+        has_gain = any(l.split(" ")[0] == "gain-applied" for l in dump)
+        want_gain = name == "pw_level"
+        check(has_gain == want_gain,
+              "%s gain-applied in the dump" % ("has" if want_gain else "no"))
+        if has_gain:
+            f.send("gain-applied 3")
+            e = f.errline(2.0)
+            check(e is not None and e.startswith("error:"),
+                  "rejects a write to gain-applied (read-only)", str(e))
+            drain(f)
+            f.set("meter 100")
+            seen, end = [], time.time() + 1.5
+            while time.time() < end:
+                l = f.line(0.5, skip_comments=True)
+                if l is None:
+                    break
+                if l.split(" ")[0] == "gain-applied":
+                    seen.append(l)
+            check(len(seen) >= 1 and all(l == "gain-applied 0" for l in seen),
+                  "armed meter reports gain-applied with the levels, 0 with nothing to level",
+                  "%r" % seen[:3])
+            f.set("meter 0")
+            drain(f)
+        else:
+            f.send("gain-applied")
+            e = f.errline(2.0)
+            check(e is not None and e.startswith("error:"),
+                  "gain-applied is an unknown name here", str(e))
+
         # sc-level likewise, exactly where there is a sidechain input to
         # meter: read-only, reported with the levels once armed, and an
         # unknown name everywhere else.

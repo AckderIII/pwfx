@@ -101,9 +101,12 @@ See [Running without the window](#running-without-the-window).
   reads as `—` rather than as the filters' -240 dB floor. A gate, compressor,
   limiter, de-esser or noise suppressor shows a third strip below those two, **gr**: how far it is
   pulling the level down, as a bar growing from the right over 24 dB and a figure such as
-  `-14.7`. A stage with a sidechain input shows one more strip above
+  `-14.7`. The leveler, which turns up as well as down, shows **gain** in
+  that place instead: a bar from the middle, right for a boost and left
+  for a cut, over 24 dB each way, and a signed figure such as `+5.5`. A
+  stage with a sidechain input shows one more strip above
   that, **sc**: the peak level arriving at the sidechain, read like in
-  and out. Which stages get either comes from the filter's `--help`, like
+  and out. Which stages get any of these comes from the filter's `--help`, like
   everything else here. A chain shows the sum of its stages' latency, in
   its header and beside its name in the list: what its filters report,
   which is what the graph compensates for. `pw_delay` adds none to it --

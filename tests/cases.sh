@@ -77,3 +77,19 @@ run_case denoise -r $RATE -c $CH -b 480  -n 0
 run_case denoise -r $RATE -c 1   -b 1    -n 12
 run_case denoise -r $RATE -c $CH -b 1024 --vad 0.6
 run_case denoise -r $RATE -c $CH -b 4096 -n 60 --vad 0.9
+
+# The leveler: the defaults, which ride the test stream's loud noise and
+# sweep down, and settings that boost, cut, half-level, gate high and low,
+# move instantly-ish, at the shortest and longest window, with lookahead of
+# a hop's fraction up to half a second, and block sizes from 1 frame to
+# 4096 -- the hop boundaries fall inside blocks and across them. The
+# denormal tail is where the gate and the bit-exact 0 dB are exercised.
+run_case level -r $RATE -c $CH -b 128
+run_case level -r $RATE -c $CH -b 97   -l -10 -B 20 -a 50 -e 200
+run_case level -r $RATE -c $CH -b 1024 -l -30 -C 30 -a 100 -e 100
+run_case level -r $RATE -c $CH -b 333  -s 50 -w 100 -a 10 -e 10
+run_case level -r $RATE -c $CH -b 256  -g -15 -w 3000 -k 500
+run_case level -r $RATE -c 1   -b 4096 -g -80 -w 1500 -k 2.7 -a 30000 -e 60000
+run_case level -r $RATE -c $CH -b 1    -l -20 -k 200 -a 300 -e 900
+run_case level -r $RATE -c $CH -b 480  -B 0 -C 0 -k 10
+run_case level -r $RATE -c $CH -b 200  -l 0 -B 30 -a 20 -e 20 -g -70

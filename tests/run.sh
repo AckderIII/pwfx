@@ -71,6 +71,14 @@ echo "de-esser against its design equations:"
 python3 tests/deess.py
 fails=$((fails+$?))
 
+# The leveler: the comparison proves core and reference agree, this that
+# they read loudness as BS.1770 does and ride it as the design says -- on
+# tones, and on real speech played 20 dB apart.
+echo
+echo "leveler against BS.1770 and its design:"
+python3 tests/level.py
+fails=$((fails+$?))
+
 # The noise suppressor: the comparison proves the framing, this measures what
 # it is for -- on real speech, and that RNNoise's delay is what it assumes.
 echo

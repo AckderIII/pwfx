@@ -32,7 +32,7 @@ step "2. control protocol"
 run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
                               bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain \
                               bin/pw_delay bin/pw_deess bin/pw_denoise \
-                              bin/pw_sccomp
+                              bin/pw_sccomp bin/pw_level
 
 step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
@@ -124,6 +124,23 @@ run python3 tests/live.py bin/pw_deess -c 2 -d abs -t -30 -R 4 -g 30 \
 run python3 tests/live.py bin/pw_deess -c 2 -t -12 -R 2 -g 30 \
     -- --audio "200,6500" "200=0+-0.3,6500=-4.60+-0.3"
 
+# The leveler in the graph, from BS.1770: a 1 kHz tone at 0.3 in both
+# channels is -10.45 LUFS by the standard's own coefficients (the channels'
+# powers add), so a target of -23 cuts it 12.55 dB and a target of -5 boosts
+# it 5.45, and gain-applied has to say so, signed. Fast times, so it settles
+# before live.py's steady window; the default 400 ms window, so the stream's
+# own fade at its end is too short a part of it to move the gain the gate
+# then freezes. Capped at 0 both ways it is transparent, and 20 ms of
+# lookahead is 960 samples of reported latency.
+run python3 tests/live.py bin/pw_level -c 2 -l -23 -C 20 -a 50 -e 50 --meter \
+    -- "loudness 5" ERROR "window 50" ERROR "gain-applied 3" ERROR "gr" ERROR \
+       "lookahead 10" "lookahead 10" "latency" "latency 480" \
+    --audio "1000" "1000=-12.55+-0.3" --gain "-12.55+-0.2"
+run python3 tests/live.py bin/pw_level -c 2 -l -5 -a 50 -e 50 \
+    -- --audio "1000" "1000=5.45+-0.3" --gain "5.45+-0.2"
+run python3 tests/live.py bin/pw_level -c 2 -B 0 -C 0 -k 20 \
+    -- "latency" "latency 960" --audio "200,4000" "200=0+-0.3,4000=0+-0.3"
+
 # The noise suppressor in the graph: at reduction 0 a tone comes through
 # untouched, which proves the framing live and the 48 kHz it asked for; its
 # latency is the three frames it reports. What it does to speech and noise
@@ -140,7 +157,7 @@ run python3 tests/delay.py bin/pw_delay
 # impulse gaps unchanged through bypass on and off, and the tone at half a
 # period of the latency -- the one an undelayed dry signal cancels -- level.
 run python3 tests/bypass.py bin/pw_comp bin/pw_sccomp bin/pw_gate bin/pw_limit bin/pw_deess \
-    bin/pw_denoise
+    bin/pw_denoise bin/pw_level
 
 # out-level with nothing connected to the output: the level the filter
 # produces, from its loudest channel
@@ -161,6 +178,8 @@ done
 # bound that means something is the one the settings themselves imply.
 run python3 tests/stress.py --max-gain 119.2 bin/pw_comp -c 2
 run python3 tests/stress.py --max-gain 119.2 bin/pw_sccomp -c 2
+# The leveler turns up, at most by max-boost, whose range ends at 30 dB.
+run python3 tests/stress.py --max-gain 30 bin/pw_level -c 2
 
 echo
 echo "==========================================================="

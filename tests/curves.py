@@ -17,6 +17,9 @@ Every expectation is derived from first principles, not from the code:
   de-esser     at full reduction the centre is cut by exactly the range, as
                it is when working; wide is flat at -range; listening shows
                the band itself, 0 dB at its centre.
+  leveler      y = x + clamp(strength (target - x), -max-cut, max-boost),
+               and nothing below the gate, where the gain holds wherever
+               it was rather than following a curve.
   gain         y = x + gain; muted, nothing; balance only ever turns a side
                down, so the louder side's line is still y = x + gain.
   gate         rising, shut by the range until the threshold; falling, open
@@ -135,6 +138,16 @@ peak = max(pts, key=lambda p: p[1])
 check(abs(peak[1]) < 0.05 and abs(math.log2(peak[0] / 5000)) < 0.05,
       "pw_deess listening: the band, 0 dB at its centre",
       "%.2f dB at %.0f Hz" % (peak[1], peak[0]))
+
+for args, (T, s, B, C, G) in ((["-l", "-18"], (-18, 1.0, 12, 12, -50)),
+                              (["-l", "-23", "-s", "50", "-B", "6", "-C", "20", "-g", "-70"],
+                               (-23, 0.5, 6, 20, -70))):
+    kind, pts = curve("pw_level", *args)
+    want = lambda x: x + max(-C, min(B, s * (T - x)))
+    err = worst(pts, want)
+    check(kind == "level" and err < 0.005 and min(x for x, _ in pts) == G,
+          "pw_level %s: rides towards the target within its caps, from the gate up"
+          % " ".join(args), "worst %.4f, from %g" % (err, min(x for x, _ in pts)))
 
 kind, pts = curve("pw_gate", "-t", "-40", "-T", "6", "-g", "20")
 xs = [x for x, _ in pts]

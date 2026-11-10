@@ -21,14 +21,18 @@ usage:
   live.py BIN [filter-args...]
           [-- "cmd" expected ...]
           [--audio "tone[,tone...]" "freq=db+-tol[,...]"]
-          [--peak "db+-tol"] [--meter] [--gr "db+-tol"]
+          [--peak "db+-tol"] [--meter] [--gr "db+-tol"] [--gain "db+-tol"]
 
 --audio levels are relative to the amplitude of each tone as played, so an
 unaffected band reads 0 dB.  --peak is the absolute sample peak of the
 recorded window in dBFS, which is how a limiter's ceiling gets checked.
 --gr checks the highest gain reduction the filter's "gr" meter reported
 during the audio run against the reduction the settings predict; it turns
-the meter on by itself.
+the meter on by itself. --gain does the same for "gain-applied", signed,
+taking the median report: a leveler's gain is not held like gr, it ramps to
+where the settings put it, stays there while the tone does, and moves again
+for a moment as the stream ends -- the reading that matters is the one it
+spends the run at.
 
 --meter turns on in-level/out-level during the audio run and checks them
 against the signal played in and the signal recorded out.
@@ -314,6 +318,11 @@ def main():
         i = argv.index("--gr")
         gr_spec = argv[i + 1]
         argv = argv[:i] + argv[i + 2:]
+    gain_spec = None
+    if "--gain" in argv:
+        i = argv.index("--gain")
+        gain_spec = argv[i + 1]
+        argv = argv[:i] + argv[i + 2:]
     if "--peak" in argv:
         i = argv.index("--peak")
         peak_spec = argv[i + 1]
@@ -384,11 +393,12 @@ def main():
         tones = [float(t) for t in audio[0].split(",")]
         expect = parse_expect(audio[1])
         try:
-            if meter or gr_spec:
+            metering = meter or gr_spec or gain_spec
+            if metering:
                 f.set("meter 50")
             mono, _, src_db = run_audio(name, rate, ch, tones)
-            levels = {"in-level": [], "out-level": [], "gr": []}
-            if meter or gr_spec:
+            levels = {"in-level": [], "out-level": [], "gr": [], "gain-applied": []}
+            if metering:
                 # the reader thread kept draining while audio ran, so the
                 # reports are queued up waiting
                 while True:
@@ -444,6 +454,14 @@ def main():
                       "gr %s dB matches the reduction the settings predict "
                       "(want %s +- %s, %d reports)"
                       % (got, want, tol or "1.0", len(levels["gr"])))
+            if gain_spec:
+                want, _, tol = gain_spec.partition("+-")
+                got = sorted(levels["gain-applied"])[len(levels["gain-applied"]) // 2] \
+                    if levels["gain-applied"] else None
+                check(got is not None and abs(got - float(want)) <= float(tol or 1.0),
+                      "gain-applied %s dB matches the gain the settings predict "
+                      "(want %s +- %s, %d reports)"
+                      % (got, want, tol or "1.0", len(levels["gain-applied"])))
         except Exception as e:
             check(False, "audio path", repr(e))
 

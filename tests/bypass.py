@@ -48,6 +48,7 @@ TRANSPARENT = {
     "pw_limit": ["-C", "0", "-i", "0"],
     "pw_deess": ["-g", "0"],
     "pw_denoise": ["-n", "0"],
+    "pw_level": ["-B", "0", "-C", "0"],
 }
 # pw_denoise's latency is fixed by RNNoise's framing; it has no lookahead to
 # set, and is tested at the one it has.

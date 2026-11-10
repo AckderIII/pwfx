@@ -1,8 +1,9 @@
 # pw_* — PipeWire filter nodes
 
-Eleven audio filters, each a standalone PipeWire filter node built on
+Twelve audio filters, each a standalone PipeWire filter node built on
 `pw_filter`. Six are ported from the raw stdin/stdout reference
-implementations in `reference/`; `pw_delay`, `pw_deess` and `pw_denoise` were
+implementations in `reference/`; `pw_delay`, `pw_deess`, `pw_denoise` and
+`pw_level` were
 written here together with references of their own -- `pw_denoise` around
 RNNoise, vendored in `third_party/rnnoise`; `pw_sccomp` is `pw_comp`'s core
 with an external key, and is held to `reference/comp.c` itself; `pw_gain` has
@@ -21,6 +22,7 @@ none, and is checked against arithmetic instead.
 | `pw_delay` | delay up to 2 s, with feedback and mix for an echo | none reported (the delay is the effect) |
 | `pw_deess` | de-esser: split-band dynamic EQ or wide, relative or absolute detection | lookahead |
 | `pw_denoise` | noise suppression for voice (RNNoise), limited reduction, optional voice gate; 48 kHz | 30 ms |
+| `pw_level` | loudness leveler: rides the gain up and down towards a target in LUFS (BS.1770), gated | lookahead (default none) |
 
 Each one takes its settings from the command line, prints them on stdout at
 startup, and accepts changes on stdin while audio is flowing.
@@ -175,6 +177,16 @@ moment it is applied:
 A fully bypassed filter reads 0: it is still computing a gain, but none of
 it reaches the output.
 
+### Applied gain
+
+`pw_level` turns up as readily as it turns down, which `gr` cannot show, so
+it has a meter of its own instead, `gain-applied`: the gain it is applying,
+in dB, signed -- `+5.5` is a boost, `-12.5` a cut. It is reported on the
+same timer as the levels but not held: it is the gain at the end of the
+last block, since a gain that moves both ways has no peak worth keeping,
+and a leveler's moves slowly anyway. Bypassed, it reads 0. The other
+filters have no `gain-applied` at all.
+
 ### Sidechain level
 
 `pw_sccomp` has one more meter, `sc-level`: the peak level arriving at
@@ -241,10 +253,11 @@ Every filter has these on top of its own:
 | `rate` | the graph's sample rate, reported when it changes (read-only) |
 | `latency` | samples of latency this filter adds, reported to the graph (read-only) |
 | `bypass` | pass the input through, crossfaded over 10 ms so it cannot click; a filter with latency keeps it, so bypassing does not move the audio in time |
-| `meter` | how often to report `in-level`, `out-level`, `gr` and `sc-level`, in ms; 0 (the default) is off |
+| `meter` | how often to report `in-level`, `out-level`, `gr`, `gain-applied` and `sc-level`, in ms; 0 (the default) is off |
 | `in-level`, `out-level` | peak level at the input ports, and of the filter's output whether connected or not, in dBFS, floored at -240 (read-only) |
 | `gr` | gain reduction being applied, dB; `pw_gate`, `pw_comp`, `pw_sccomp`, `pw_limit`, `pw_deess` and `pw_denoise` only (read-only) |
 | `sc-level` | peak level arriving at the sidechain input, dBFS; `pw_sccomp` only (read-only) |
+| `gain-applied` | gain being applied, dB, signed, not held; `pw_level` only (read-only) |
 | `max-rate` | the highest rate delay lines are sized for at startup (command line only) |
 | `node-name`, `target`, `node-latency` | PipeWire plumbing (command line only) |
 
@@ -312,6 +325,40 @@ Link port by port: a node-to-node `pw-link` decides by itself which input
 gets what. With nothing on `sc_in` the key is silence and the audio passes
 untouched (makeup aside). In the app, the stage card has a **sidechain**
 picker for this instead.
+
+## Levelling, by hand
+
+`pw_level` is the hand on the fader: it rides a quiet speaker up and a loud
+one down, over seconds, towards a loudness in LUFS, and leaves each
+syllable's own dynamics to a compressor. It does not catch peaks -- a boost
+turns transients up too -- so a limiter goes after it:
+
+```sh
+./bin/pw_level -c 2 -l -18 -g -50 --node-name ride  &
+./bin/pw_limit -c 2 -C -1         --node-name catch &
+
+pw-link mic   ride
+pw-link ride  catch
+pw-link catch speakers
+```
+
+What it measures is ITU-R BS.1770's loudness -- K-weighted, the channels'
+powers summed -- over a sliding window (`window`, 400 ms by default), in
+5 ms hops, and only the hops that are sound: a hop under `gate`, or more
+than 20 dB under the mean of the last few seconds' sound, is left out. So
+a pause neither reads as the speaker getting quieter nor gets ridden up to
+the target; when the whole window is pause, the gain holds where it is.
+Set `gate` between the room and the quietest speech; the relative gate
+takes care of breaths and of a room that creeps over it. Because pauses do
+not count, BS.1770's *integrated* loudness, which counts the short gaps
+within phrases, measures speech levelled to -18 at about -19.5.
+
+`attack` is how fast it turns down, `release` how fast it turns up, both
+as 63 % times; `strength` below 100 goes only part of the way;
+`max-boost` and `max-cut` cap it. `lookahead` delays the audio so the
+gain moves before the change is heard -- half the window centres the
+measurement on what is being heard -- at the price of that much latency,
+which is reported. `gain-applied` shows where it is.
 
 ## What changed from the reference implementations
 
@@ -387,6 +434,10 @@ tests/sidechain.py pw_sccomp in the graph: the key on sc_in sets the cut,
 tests/deess.py     pw_deess against its design equations, offline: the
                    cut at the centre, on the skirt, capped by the range,
                    in both detections and both modes, and bit-exact idle
+tests/level.py     pw_level against BS.1770 and its design, offline: the
+                   loudness of tones by the standard's own coefficients,
+                   both gates, caps, strength, time constants, lookahead,
+                   and real speech played 20 dB apart coming out level
 tests/delay.py     pw_delay in the graph: the delay exact to the sample,
                    none of it reported as latency, no click on a change
 tests/bypass.py    bypassing a lookahead filter keeps its timing, and its

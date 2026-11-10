@@ -160,6 +160,15 @@ typedef struct {
      * in-level and out-level; one that leaves it NULL does not have one. */
     double (*gain_reduction)(void *user, const void *coeffs);
 
+    /* Optional, realtime thread: the gain the filter is applying now, in
+     * dB, signed -- positive turns up. For a filter that turns up as well
+     * as down, which gr cannot show. Called after every process() like
+     * gain_reduction, and as cheap. A filter that sets this gets a
+     * read-only "gain-applied" meter, reported with the levels: the value
+     * at the end of the last block, not a held peak, since a gain that
+     * moves both ways has no peak worth holding. */
+    double (*gain_applied)(void *user, const void *coeffs);
+
     /* Optional, main thread: the response the coefficients produce, for
      * drawing. Fill x[] and y[] with up to max points and return how many.
      * The points are a path in drawing order, not a function of x -- a

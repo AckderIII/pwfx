@@ -49,7 +49,7 @@
 
 enum {
     C_CHANNELS, C_RATE, C_LATENCY, C_BYPASS,
-    C_METER, C_IN_LEVEL, C_OUT_LEVEL, C_GR, C_SC_LEVEL,
+    C_METER, C_IN_LEVEL, C_OUT_LEVEL, C_GR, C_GAIN, C_SC_LEVEL,
     C_MAX_RATE, C_NODE_NAME, C_TARGET, C_NODE_LATENCY,
     C_N
 };
@@ -82,6 +82,11 @@ static const pwf_param core_template[C_N] = {
       .min = 0, .max = -PWF_DB_FLOOR, .def = 0,
       .flags = PWF_F_RO, .unit = "dB",
       .help = "peak gain reduction being applied, dB" },
+    /* Only on filters that set gain_applied; see core_shown(). */
+    { .name = "gain-applied", .type = PWF_DOUBLE,
+      .min = -60, .max = 60, .def = 0,
+      .flags = PWF_F_RO, .unit = "dB",
+      .help = "gain being applied now, dB; positive turns up" },
     /* Only on filters with a sidechain input; see core_shown(). */
     { .name = "sc-level", .type = PWF_DOUBLE,
       .min = PWF_DB_FLOOR, .max = 60, .def = PWF_DB_FLOOR,
@@ -139,6 +144,7 @@ struct pwf {
     _Atomic uint32_t rt_in_level;   /* float bits, dBFS */
     _Atomic uint32_t rt_out_level;  /* float bits, dBFS */
     _Atomic uint32_t rt_gr;         /* float bits, dB of reduction */
+    _Atomic uint32_t rt_gain;       /* float bits, dB of gain, signed */
     _Atomic uint32_t rt_sc_level;   /* float bits, dBFS, sidechain input */
     _Atomic uint32_t rt_fall;       /* float bits, dB of fallback per sample */
     struct spa_source *meter_timer;
@@ -180,14 +186,16 @@ struct pwf {
 
 /* ---- parameter table helpers ------------------------------------------ */
 
-/* Whether a core parameter exists for this filter. All of them do but two
+/* Whether a core parameter exists for this filter. All of them do but three
  * meters: "gr", which only a filter with a gain_reduction callback has -- a
  * gain-reduction meter on a low-pass would be a parameter that is always 0,
- * and the app would draw a meter for it -- and "sc-level", which only a
+ * and the app would draw a meter for it -- "gain-applied", which only a
+ * filter with a gain_applied callback has, and "sc-level", which only a
  * filter with a sidechain input has, for the same reason. */
 static int core_shown(const struct pwf *s, size_t i)
 {
     if (i == C_GR)       return s->desc->gain_reduction != NULL;
+    if (i == C_GAIN)     return s->desc->gain_applied != NULL;
     if (i == C_SC_LEVEL) return s->desc->sidechain != 0;
     return 1;
 }
@@ -270,19 +278,24 @@ static int refresh_meters(struct pwf *s)
     double out = u2f(atomic_load_explicit(&s->rt_out_level, memory_order_relaxed));
     double gr  = u2f(atomic_load_explicit(&s->rt_gr,        memory_order_relaxed));
     double sc  = u2f(atomic_load_explicit(&s->rt_sc_level,  memory_order_relaxed));
+    double gn  = u2f(atomic_load_explicit(&s->rt_gain,      memory_order_relaxed));
 
     in  = round(in  * 10.0) / 10.0;
     out = round(out * 10.0) / 10.0;
     gr  = round(gr  * 10.0) / 10.0;
     sc  = round(sc  * 10.0) / 10.0;
+    gn  = round(gn  * 10.0) / 10.0;
+    if (gn == 0.0) gn = 0.0;        /* no "-0" from a gain just under zero */
 
     if (in == s->core[C_IN_LEVEL].value && out == s->core[C_OUT_LEVEL].value &&
-        gr == s->core[C_GR].value && sc == s->core[C_SC_LEVEL].value)
+        gr == s->core[C_GR].value && sc == s->core[C_SC_LEVEL].value &&
+        gn == s->core[C_GAIN].value)
         return 0;
 
     s->core[C_IN_LEVEL].value  = in;
     s->core[C_OUT_LEVEL].value = out;
     s->core[C_GR].value        = gr;
+    s->core[C_GAIN].value      = gn;
     s->core[C_SC_LEVEL].value  = sc;
     return 1;
 }
@@ -470,6 +483,7 @@ static void on_meter_timer(void *data, uint64_t expirations)
     report(&s->core[C_IN_LEVEL]);
     report(&s->core[C_OUT_LEVEL]);
     if (core_shown(s, C_GR)) report(&s->core[C_GR]);
+    if (core_shown(s, C_GAIN)) report(&s->core[C_GAIN]);
     if (core_shown(s, C_SC_LEVEL)) report(&s->core[C_SC_LEVEL]);
 }
 
@@ -623,7 +637,8 @@ static void command(struct pwf *s, char *line)
         }
         if ((par = find_param(s, name)) != NULL) {
             if (par == &s->core[C_IN_LEVEL] || par == &s->core[C_OUT_LEVEL] ||
-                par == &s->core[C_GR] || par == &s->core[C_SC_LEVEL])
+                par == &s->core[C_GR] || par == &s->core[C_GAIN] ||
+                par == &s->core[C_SC_LEVEL])
                 refresh_meters(s);
             report(par);
             return;
@@ -742,7 +757,7 @@ static void on_process(void *data, struct spa_io_position *position)
     const void *coeffs;
     int changed, meter;
     float ipk = 0.0f, opk = 0.0f, spk = 0.0f;
-    double grpk = 0.0, tgt, inc;
+    double grpk = 0.0, gain = 0.0, tgt, inc;
 
     if (total == 0) return;
 
@@ -830,6 +845,8 @@ static void on_process(void *data, struct spa_io_position *position)
             double g = s->desc->gain_reduction(s->desc->user, coeffs);
             if (g > grpk) grpk = g;
         }
+        if (s->desc->gain_applied)
+            gain = s->desc->gain_applied(s->desc->user, coeffs);
 
         /* Bypass, as a crossfade between the processed and the dry signal.
          * Every channel walks the same ramp, so they all end together. */
@@ -905,6 +922,13 @@ static void on_process(void *data, struct spa_io_position *position)
         if (grpk > s->rt_gr_db) s->rt_gr_db = grpk;
         if (s->rt_gr_db < 0.0)  s->rt_gr_db = 0.0;
         atomic_store_explicit(&s->rt_gr, f2u((float)s->rt_gr_db),
+                              memory_order_relaxed);
+
+        /* The gain as it stands at the end of the block, not held: it moves
+         * both ways, slowly, and there is no peak of it worth keeping. Like
+         * gr, a bypassed filter applies none of it. */
+        if (s->rt_mix == 0.0) gain = 0.0;
+        atomic_store_explicit(&s->rt_gain, f2u((float)gain),
                               memory_order_relaxed);
     }
 }
@@ -1248,6 +1272,7 @@ int pwf_run(pwf_desc *desc, int argc, char **argv)
     atomic_init(&s.rt_in_level,  f2u((float)PWF_DB_FLOOR));
     atomic_init(&s.rt_out_level, f2u((float)PWF_DB_FLOOR));
     atomic_init(&s.rt_gr, f2u(0.0f));
+    atomic_init(&s.rt_gain, f2u(0.0f));
     atomic_init(&s.rt_sc_level, f2u((float)PWF_DB_FLOOR));
     atomic_init(&s.rt_fall, f2u(0.0f));
 
