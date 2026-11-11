@@ -27,6 +27,11 @@ and the output is measured:
   scale      real speech (tests/data/speech.wav) and its own room noise,
              played 20 dB apart, settle 20 dB apart however low the gate
              is set: the relative gate keeps the room out of both.
+  long pause a room 30 dB under the voice, over the absolute gate, is not
+             ridden up in half a minute of pause: hops the relative gate
+             drops pull its reference down twelve times more slowly than
+             hops it counts. And it does come down: a speaker who turns
+             15 or 25 dB quieter for good is followed.
   speech     the same speech at three levels 20 dB apart comes out within
              a dB of itself, by BS.1770's integrated loudness computed
              here -- 1-2 dB under the target, since that counts the gaps
@@ -236,6 +241,40 @@ outs = [integrated(y[(k + 1) * n - len(voice):(k + 1) * n]) for k in range(3)]
 check(max(outs) - min(outs) < 1.0 and all(-22.0 <= o <= -20.5 for o in outs),
       "speech at %s LUFS comes out at %s LUFS, levelled to -20"
       % ("/".join("%.1f" % v for v in ins), "/".join("%.1f" % v for v in outs)))
+
+# A long pause over a room the absolute gate lets through. The gate is at
+# -80, under everything; the room is steady noise 30 dB under the voice's
+# integrated loudness. The relative gate drops it, and a dropped hop pulls
+# the reference down at 60 s rather than 5, so half a minute of it leaves
+# the gain where the speech left it. When dropped hops moved the reference
+# as fast as counted ones it decayed into the room in 7 s, and the room was
+# then ridden up to max-boost: +3.4 dB by the end of this.
+lv = integrated(voice)
+random.seed(2)
+room = [random.gauss(0.0, 1.0) for _ in range(RATE)]
+kn = k_weight(room)
+scale = 10 ** ((lv - 30.0 + 0.691 - 10 * math.log10(sum(v * v for v in kn) / len(kn))) / 20)
+room = [scale * v for v in room]
+blocks = lambda secs: int(secs * RATE / 128)
+_, tr = run(voice * 2 + room * 30, "-l", "-20", "-g", "-80")
+held, end = tr[blocks(13.0)], tr[-1]
+check(abs(end - held) < 0.1,
+      "a room 30 dB under the voice is not ridden up in a 30 s pause: "
+      "%+.2f dB after the speech, %+.2f at the end" % (held, end),
+      "the relative gate's reference decayed into the room")
+
+# The other side of that: the reference must still come down, or a speaker
+# who turns quieter for good would be shut out with the room. 15 dB down is
+# within the relative gate and followed at once; 25 dB down is under it,
+# and is followed once the slow pull has brought the reference to where
+# the louder hops pass -- about a minute of their speech.
+for drop, secs, tol in ((15.0, 30, 1.0), (25.0, 120, 1.5)):
+    x = voice * 3 + [v * 10 ** (-drop / 20) for v in voice * (secs // 6)]
+    _, tr = run(x, "-l", "-45", "-B", "30", "-C", "30", "-g", "-90")
+    rose = tr[-1] - tr[blocks(17.9)]
+    check(abs(rose - drop) < tol,
+          "a speaker %g dB quieter for good is followed within %d s: +%.2f dB"
+          % (drop, secs, rose))
 
 # ---- the gain computer -----------------------------------------------------
 

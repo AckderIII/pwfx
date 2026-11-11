@@ -349,7 +349,12 @@ than 20 dB under the mean of the last few seconds' sound, is left out. So
 a pause neither reads as the speaker getting quieter nor gets ridden up to
 the target; when the whole window is pause, the gain holds where it is.
 Set `gate` between the room and the quietest speech; the relative gate
-takes care of breaths and of a room that creeps over it. Because pauses do
+takes care of breaths and of a room that creeps over it -- for a while:
+a steady room 30 dB under the voice is held out for about two minutes of
+pause, one 25 dB under for 40 s, and one less than 20 dB under not at
+all. Through a longer silence only `gate` holds. The same slowness is
+why a speaker who turns more than 20 dB quieter for good takes about a
+minute of speaking to be picked up. Because pauses do
 not count, BS.1770's *integrated* loudness, which counts the short gaps
 within phrases, measures speech levelled to -18 at about -19.5.
 

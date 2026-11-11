@@ -197,8 +197,9 @@ picks which input gets what, and uses a fresh filter per run: a node left
 on a real device's clock rate-matches the next run's test streams off
 pitch.
 
-**`pw_level` gates per 5 ms hop, twice, and the relative gate's reference
-is the last few seconds, not the window -- keep all three.** Each was forced
+**`pw_level` gates per 5 ms hop, twice, the relative gate's reference
+is the last few seconds, not the window, and a hop it drops moves that
+reference twelve times more slowly -- keep all four.** Each was forced
 by `tests/level.py`. Gating the window as a whole read the end of every
 phrase as the speaker fading (the window filling with pause), so the gain
 climbed into every pause and overshot at every onset; hops under the gate
@@ -211,7 +212,15 @@ the window's own mean it did nothing in a long pause -- a window of pure
 room is its own reference -- while the voice's room noise moves with the
 voice, so no fixed gate suits the same speech 20 dB apart: the reference
 is a 5 s mean of the hops that passed the absolute gate, and the same
-speech then settles 19.9 dB apart for 20 at any gate under the voice.
+speech then settles 20.0 dB apart for 20 at any gate under the voice.
+But every hop over the absolute gate moved that mean, dropped or not, so
+7 s into a pause it had decayed into a room 30 dB under the voice, the
+room passed, and was ridden up to max-boost: a dropped hop now moves it
+at 60 s, not 5, which holds that room for two minutes (one 25 dB under
+for 40 s). Not at all would be wrong the other way -- a speaker turned
+25 dB quieter for good is let back in by that slow pull, after about a
+minute of speech -- so it is a trade, and past it the absolute gate is
+what holds.
 The cost, documented: what is ridden to is the loudness of sound while it
 sounds, so BS.1770 *integrated* reads levelled speech 1-2 dB under the
 target. Its K-weighting is designed from the analogue prototypes for any

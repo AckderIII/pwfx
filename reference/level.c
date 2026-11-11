@@ -51,11 +51,18 @@
  *    counted, once the window holds nothing else, is the noise floor being
  *    ridden up to the target. Judged against the voice of the last few
  *    seconds, the room stays out wherever --gate is. Six seconds of real
- *    speech, played 20 dB apart, settle 19.9 dB apart with --gate at -80
- *    and 19.8 at -65. The reference is long, and not the window's own
+ *    speech, played 20 dB apart, settle 20.0 dB apart with --gate at -80
+ *    and 19.9 at -65. The reference is long, and not the window's own
  *    mean, for exactly that reason: a window full of pause would be its own
- *    reference. It does follow a speaker who has turned quieter for good,
- *    in about one time constant of their speech. 20 dB rather than BS.1770's
+ *    reference. A hop the relative gate drops still moves the reference,
+ *    but at REF_SLOW_MS instead: moving it as fast as a counted hop, a
+ *    steady room 30 dB under the voice had pulled the reference down to
+ *    itself 7 s into a pause and was then ridden up to --max-boost; now
+ *    that takes two minutes, and a room 25 dB under takes 40 s. Not moving
+ *    it at all would shut out a speaker who has turned quieter for good
+ *    with the room. They are followed: at once if less than 20 dB down,
+ *    after about a minute of their speech at 25, and --gate is what holds
+ *    through a longer silence. 20 dB rather than BS.1770's
  *    10 LU, because a 5 ms hop of speech swings much further than a 400 ms
  *    block, and 10 would drop its consonants.
  *  - So the loudness ridden to is that of the sound while it sounds --
@@ -119,6 +126,7 @@
 #define LUFS_OFFSET   (-0.691)
 #define REL_GATE_LIN  0.01           /* REL_GATE_DB, -20 dB, as a power */
 #define REF_MS        5000.0         /* the relative gate's memory */
+#define REF_SLOW_MS   60000.0        /* ... of the hops it dropped */
 #define DB_FLOOR      (-240.0)
 
 typedef struct { double b0, b1, b2, a1, a2; } biquad_t;
@@ -225,7 +233,7 @@ int main(int argc, char **argv)
     unsigned char live[MAX_HOPS];    /* 1 if over the gate */
     int       hop_len, n_hops, hop_w = 0, hop_n = 0;
     double    hop_acc = 0.0, want = 0.0, g = 0.0, gmin = 0.0, gmax = 0.0;
-    double    aA, aR, aRef, k_str, ref = 0.0;
+    double    aA, aR, aRef, aRefSlow, k_str, ref = 0.0;
     int       gated = 1;
     const double LOG10_10 = 10.0 / M_LN10, LN10_20 = M_LN10 / 20.0;
 
@@ -319,6 +327,7 @@ int main(int argc, char **argv)
     aA = attack_ms  > 0.0 ? exp(-1000.0 / (attack_ms  * rate)) : 0.0;
     aR = release_ms > 0.0 ? exp(-1000.0 / (release_ms * rate)) : 0.0;
     aRef = exp(-1000.0 * (double)hop_len / (REF_MS * rate));
+    aRefSlow = exp(-1000.0 * (double)hop_len / (REF_SLOW_MS * rate));
 
     L           = (int)(look_ms * rate / 1000.0 + 0.5);
     ring_frames = L + 1;
@@ -377,10 +386,14 @@ int main(int argc, char **argv)
                 ms   = hop_acc / (double)hop_len;
                 lufs = ms > 0.0 ? LUFS_OFFSET + LOG10_10 * log(ms) : DB_FLOOR;
                 if (lufs >= gate) {
-                    /* past the absolute gate: it moves the reference, and
-                     * counts if it is not far under it */
-                    ref = ref > 0.0 ? aRef * ref + (1.0 - aRef) * ms : ms;
-                    ok = ms >= ref * REL_GATE_LIN;
+                    /* past the absolute gate: it counts if it is not far
+                     * under the reference as it would move it, and then
+                     * does move it; one that is dropped moves it too, but
+                     * far more slowly */
+                    double moved = ref > 0.0 ? aRef * ref + (1.0 - aRef) * ms
+                                             : ms;
+                    ok = ms >= moved * REL_GATE_LIN;
+                    ref = ok ? moved : aRefSlow * ref + (1.0 - aRefSlow) * ms;
                 }
                 live[hop_w] = (unsigned char)ok;
                 hops[hop_w] = ok ? hop_acc : 0.0;

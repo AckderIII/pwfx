@@ -40,8 +40,15 @@
  *    Measured against the voice of the last few seconds instead, the room
  *    stays out wherever the absolute gate is. The reference is long and
  *    not the window's own mean for exactly that reason: a window full of
- *    pause would be its own reference. It does follow a speaker who has
- *    turned quieter for good, in about one time constant of their speech.
+ *    pause would be its own reference. A hop the relative gate drops
+ *    still moves the reference, but at LEVEL_REF_SLOW_MS instead: moving
+ *    it as fast as a counted hop, a steady room 30 dB under the voice had
+ *    pulled the reference down to itself 7 s into a pause and was then
+ *    ridden up to max-boost; now that takes two minutes, and a room 25 dB
+ *    under takes 40 s. Not moving it at all would shut out a speaker who
+ *    has turned quieter for good with the room. They are followed: at
+ *    once if less than 20 dB down, after about a minute of their speech
+ *    at 25, and the absolute gate is what holds through a longer silence.
  *    20 dB, not BS.1770's 10 LU, because a 5 ms hop of speech swings much
  *    further than a 400 ms block, and 10 would drop the consonants.
  *  - So the loudness ridden to is that of the sound while it sounds, ITU-T
@@ -79,13 +86,16 @@
 #define LEVEL_REL_GATE_DB   20.0
 #define LEVEL_REL_GATE_LIN  0.01        /* LEVEL_REL_GATE_DB as a power */
 #define LEVEL_REF_MS        5000.0      /* the relative gate's memory */
+#define LEVEL_REF_SLOW_MS   60000.0     /* ... of the hops it dropped */
 #define LEVEL_DB_FLOOR      (-240.0)
 
 typedef struct {
     biquad_t shelf, hp;                 /* K-weighting */
     double   loud, gate, k_str, boost, cut;
     double   aA, aR;
-    double   aRef;                      /* the reference's one-pole, per hop */
+    double   aRef, aRefSlow;            /* the reference's one-pole, per hop:
+                                         * for a hop it passes, for one it
+                                         * drops */
     int      hop_len, n_hops;           /* samples per hop, hops per window */
     int      L;                         /* lookahead, samples */
 } level_coeffs;
@@ -159,6 +169,7 @@ static inline void level_design(level_coeffs *c, double rate, double loud,
     c->aA = attack_ms  > 0.0 ? exp(-1000.0 / (attack_ms  * rate)) : 0.0;
     c->aR = release_ms > 0.0 ? exp(-1000.0 / (release_ms * rate)) : 0.0;
     c->aRef = exp(-1000.0 * (double)c->hop_len / (LEVEL_REF_MS * rate));
+    c->aRefSlow = exp(-1000.0 * (double)c->hop_len / (LEVEL_REF_SLOW_MS * rate));
     c->L  = (int)(look_ms * rate / 1000.0 + 0.5);
 }
 
@@ -209,10 +220,12 @@ static inline void level_hop(level_state *s, const level_coeffs *c)
     ms   = s->hop_acc / (double)c->hop_len;
     lufs = ms > 0.0 ? LEVEL_LUFS_OFFSET + LOG10_10 * log(ms) : LEVEL_DB_FLOOR;
     if (lufs >= c->gate) {
-        /* the absolute gate passed it: it moves the reference, and is
-         * counted if it is not far under it */
-        s->ref = s->ref > 0.0 ? c->aRef * s->ref + (1.0 - c->aRef) * ms : ms;
-        live = ms >= s->ref * LEVEL_REL_GATE_LIN;
+        /* the absolute gate passed it: it is counted if it is not far
+         * under the reference as it would move it, and then does move it;
+         * one that is dropped moves it too, but far more slowly */
+        double ref = s->ref > 0.0 ? c->aRef * s->ref + (1.0 - c->aRef) * ms : ms;
+        live = ms >= ref * LEVEL_REL_GATE_LIN;
+        s->ref = live ? ref : c->aRefSlow * s->ref + (1.0 - c->aRefSlow) * ms;
     }
     s->live[s->hop_w] = (unsigned char)live;
     s->hops[s->hop_w] = live ? s->hop_acc : 0.0;
