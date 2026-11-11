@@ -29,10 +29,14 @@ recorded window in dBFS, which is how a limiter's ceiling gets checked.
 --gr checks the highest gain reduction the filter's "gr" meter reported
 during the audio run against the reduction the settings predict; it turns
 the meter on by itself. --gain does the same for "gain-applied", signed,
-taking the median report: a leveler's gain is not held like gr, it ramps to
-where the settings put it, stays there while the tone does, and moves again
-for a moment as the stream ends -- the reading that matters is the one it
-spends the run at.
+taking the last report made while in-level was still at its highest: a
+leveler's gain is not held like gr, it ramps to where the settings put it,
+stays there while the tone does, and moves again for a moment as the
+stream ends -- the reading that matters is the one it has settled at
+while the tone plays. Not the median of all reports, which this was: a
+line appears only when a meter changes, so the steady tone yields a
+handful and the eleven seconds in-level then takes to fall back yield
+two hundred, every one carrying the gain as the stream's end left it.
 
 --meter turns on in-level/out-level during the audio run and checks them
 against the signal played in and the signal recorded out.
@@ -398,6 +402,14 @@ def main():
                 f.set("meter 50")
             mono, _, src_db = run_audio(name, rate, ch, tones)
             levels = {"in-level": [], "out-level": [], "gr": [], "gain-applied": []}
+            gain_at = []        # (the in-level reported with it, gain-applied)
+
+            def take(l):
+                k, _, v = l.partition(" ")
+                if k in levels:
+                    levels[k].append(float(v))
+                    if k == "gain-applied" and levels["in-level"]:
+                        gain_at.append((levels["in-level"][-1], float(v)))
             if metering:
                 # the reader thread kept draining while audio ran, so the
                 # reports are queued up waiting
@@ -405,14 +417,10 @@ def main():
                     l = f.line(0.2, skip_comments=True)
                     if l is None:
                         break
-                    k, _, v = l.partition(" ")
-                    if k in levels:
-                        levels[k].append(float(v))
+                    take(l)
                 f.set("meter 0")
                 for l in getattr(f, "extra", []):
-                    k, _, v = l.partition(" ")
-                    if k in levels:
-                        levels[k].append(float(v))
+                    take(l)
             if not mono:
                 check(False, "audio passes through the filter", "nothing recorded")
             else:
@@ -456,12 +464,14 @@ def main():
                       % (got, want, tol or "1.0", len(levels["gr"])))
             if gain_spec:
                 want, _, tol = gain_spec.partition("+-")
-                got = sorted(levels["gain-applied"])[len(levels["gain-applied"]) // 2] \
-                    if levels["gain-applied"] else None
+                top = max(lv for lv, _ in gain_at) if gain_at else None
+                steady = [g for lv, g in gain_at if lv >= top - 0.05]
+                got = steady[-1] if steady else None
                 check(got is not None and abs(got - float(want)) <= float(tol or 1.0),
-                      "gain-applied %s dB matches the gain the settings predict "
-                      "(want %s +- %s, %d reports)"
-                      % (got, want, tol or "1.0", len(levels["gain-applied"])))
+                      "gain-applied %s dB while the tone plays matches the gain "
+                      "the settings predict (want %s +- %s, %d of %d reports)"
+                      % (got, want, tol or "1.0", len(steady),
+                         len(levels["gain-applied"])))
         except Exception as e:
             check(False, "audio path", repr(e))
 

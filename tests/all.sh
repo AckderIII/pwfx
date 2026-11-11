@@ -128,9 +128,9 @@ run python3 tests/live.py bin/pw_deess -c 2 -t -12 -R 2 -g 30 \
 # channels is -10.45 LUFS by the standard's own coefficients (the channels'
 # powers add), so a target of -23 cuts it 12.55 dB and a target of -5 boosts
 # it 5.45, and gain-applied has to say so, signed. Fast times, so it settles
-# before live.py's steady window; the default 400 ms window, so the stream's
-# own fade at its end is too short a part of it to move the gain the gate
-# then freezes. Capped at 0 both ways it is transparent, and 20 ms of
+# before live.py's steady window, and gain-applied is read while the tone
+# still plays: the stream's end moves the gain about 0.6 dB before the gate
+# freezes it, and that is the value every later report carries. Capped at 0 both ways it is transparent, and 20 ms of
 # lookahead is 960 samples of reported latency.
 run python3 tests/live.py bin/pw_level -c 2 -l -23 -C 20 -a 50 -e 50 --meter \
     -- "loudness 5" ERROR "window 50" ERROR "gain-applied 3" ERROR "gr" ERROR \
