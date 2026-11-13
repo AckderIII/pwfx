@@ -148,12 +148,60 @@ pub struct Bus {
     pub width: usize,
     #[serde(default)]
     pub kind: BusKind,
-    /// Applications routed to this bus, by `application.name`: their
-    /// playback streams into a sink bus, their recording streams out of a
-    /// source bus. The kind decides which, because that is the only
+    /// Applications routed to this bus, whole or one stream at a time:
+    /// their playback streams into a sink bus, their recording streams out
+    /// of a source bus. The kind decides which, because that is the only
     /// direction the session manager will link a stream to it in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub apps: Vec<String>,
+    pub apps: Vec<Routed>,
+}
+
+/// What a bus routes: every stream of an application, or one of them.
+///
+/// One stream is named by its application and its stream name
+/// (`media.name`, `node.name` where there is none), because `node.name` alone
+/// does not tell them apart: OBS calls every one of its streams "OBS" and
+/// puts the source's name in `media.name`. A rule for one stream wins over
+/// one for its whole application, wherever each is, so an application can
+/// go to one bus with one of its streams on another.
+///
+/// Saved as before for a whole application -- a bare string, which is what
+/// every earlier state file holds -- and as `{"app", "stream"}` for one
+/// stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Routed {
+    App(String),
+    Stream { app: String, stream: String },
+}
+
+impl Routed {
+    pub fn app(&self) -> &str {
+        match self {
+            Routed::App(a) | Routed::Stream { app: a, .. } => a,
+        }
+    }
+
+    pub fn stream(&self) -> Option<&str> {
+        match self {
+            Routed::App(_) => None,
+            Routed::Stream { stream, .. } => Some(stream),
+        }
+    }
+
+    /// How the rule reads in the window.
+    pub fn label(&self) -> String {
+        match self {
+            Routed::App(a) => a.clone(),
+            Routed::Stream { app, stream } => format!("{app} › {stream}"),
+        }
+    }
+}
+
+impl From<&str> for Routed {
+    fn from(app: &str) -> Self {
+        Routed::App(app.into())
+    }
 }
 
 impl Bus {
@@ -620,10 +668,15 @@ mod tests {
                 enabled: true,
                 width: 2,
                 kind: BusKind::Sink,
-                apps: Vec::new(),
+                apps: vec![
+                    "Firefox".into(),
+                    Routed::Stream { app: "OBS".into(), stream: "Mic/Aux".into() },
+                ],
             }],
         };
         let text = serde_json::to_string(&st).unwrap();
+        // A whole application is saved as it always was, a bare string.
+        assert!(text.contains(r#""apps":["Firefox",{"app":"OBS","stream":"Mic/Aux"}]"#), "{text}");
         assert_eq!(serde_json::from_str::<AppState>(&text).unwrap(), st);
     }
 

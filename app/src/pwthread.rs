@@ -105,11 +105,14 @@ pub struct NodeSpec {
 }
 
 /// Applications' streams the app wants on a node: every audio stream whose
-/// `application.name` is `app` and that records (or plays, per `record`) is
-/// sent to `target`.
+/// `application.name` is `app` -- and, with `stream`, whose stream name
+/// (`media.name`, else `node.name`) is that -- and that records (or plays,
+/// per `record`) is sent to `target`. A route with a `stream` wins over one
+/// without for the streams it names.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RouteSpec {
     pub app: String,
+    pub stream: Option<String>,
     pub record: bool,
     pub target: String,
 }
@@ -218,6 +221,15 @@ struct NodeRec {
     description: String,
     media_class: String,
     app: Option<String>,
+    /// `media.name`, which on an application's stream is often the only
+    /// thing that tells its streams apart. It is not in the registry's
+    /// announcement -- only a few properties are -- so an application's
+    /// stream is bound and this comes from its info.
+    media_name: Option<String>,
+    /// Whether that info has arrived. Until it has, the stream is not
+    /// routed: a rule for the whole application would otherwise take a
+    /// stream that a rule for that one stream is about to claim.
+    known: bool,
     /// `node.dont-move`: the stream asked not to be moved, and is not.
     dont_move: bool,
     /// `object.serial`, which unlike the id is never handed out twice. A
@@ -308,6 +320,7 @@ impl State {
                 },
                 media_class: n.media_class.clone(),
                 app: n.app.clone(),
+                media_name: n.media_name.clone(),
                 ports: by_node.remove(id).unwrap_or_default(),
             })
             .collect();
@@ -541,6 +554,10 @@ fn session(
     // the routes are written through.
     let metadata: Rc<RefCell<Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>>> =
         Rc::new(RefCell::new(None));
+    // Applications' streams, bound for their `media.name` (`watch_stream`).
+    // Kept out of `State` because each listener holds the state.
+    let streams: Rc<RefCell<HashMap<u32, (pw::node::Node, pw::node::NodeListener)>>> =
+        Rc::default();
 
     // A repeating tick rather than a one-shot armed from the callbacks: the
     // callbacks then only have to set a flag, which keeps them from having to
@@ -576,6 +593,7 @@ fn session(
         .global({
             let (st, graph_moved) = (st.clone(), graph_moved.clone());
             let (registry, metadata) = (registry.downgrade(), metadata.clone());
+            let streams = streams.clone();
             move |g| {
                 if g.type_ == ObjectType::Metadata {
                     if prop(g.props, "metadata.name").as_deref() == Some("default") {
@@ -589,12 +607,30 @@ fn session(
                 if take_global(&mut st.borrow_mut(), g) {
                     graph_moved.set(true);
                 }
+                if g.type_ == ObjectType::Node && is_app_stream(g.props) {
+                    let watched = registry
+                        .upgrade()
+                        .and_then(|r| watch_stream(&r, g, &st, &graph_moved));
+                    match watched {
+                        Some(w) => {
+                            streams.borrow_mut().insert(g.id, w);
+                        }
+                        // Not bindable: route it by node.name rather than
+                        // never.
+                        None => {
+                            if let Some(n) = st.borrow_mut().nodes.get_mut(&g.id) {
+                                n.known = true;
+                            }
+                        }
+                    }
+                }
             }
         })
         .global_remove({
             let (st, graph_moved) = (st.clone(), graph_moved.clone());
-            let metadata = metadata.clone();
+            let (metadata, streams) = (metadata.clone(), streams.clone());
             move |id| {
+                streams.borrow_mut().remove(&id);
                 let mut st = st.borrow_mut();
                 let mut hit = st.nodes.remove(&id).is_some()
                     | st.ports.remove(&id).is_some()
@@ -732,10 +768,17 @@ fn plan_routes(
             "Stream/Input/Audio" => true,
             _ => continue,
         };
-        if n.dont_move {
+        if n.dont_move || !n.known {
             continue;
         }
-        let Some(r) = desired.iter().find(|r| r.app == app && r.record == record) else {
+        let stream = n.media_name.as_deref().unwrap_or(&n.name);
+        let going = |r: &&RouteSpec| r.app == app && r.record == record;
+        let Some(r) = desired
+            .iter()
+            .filter(going)
+            .find(|r| r.stream.as_deref() == Some(stream))
+            .or_else(|| desired.iter().filter(going).find(|r| r.stream.is_none()))
+        else {
             continue;
         };
         // A target that is not there yet -- a bus still being made, or
@@ -861,6 +904,8 @@ fn take_global(
                         .unwrap_or_default(),
                     media_class: prop(p, "media.class").unwrap_or_default(),
                     app: prop(p, "application.name"),
+                    media_name: prop(p, "media.name"),
+                    known: !is_app_stream(p),
                     dont_move: prop(p, "node.dont-move").as_deref() == Some("true"),
                     serial: prop(p, "object.serial").and_then(|s| s.parse().ok()).unwrap_or(0),
                 },
@@ -1014,6 +1059,44 @@ fn idle(
     (rx, quit.get())
 }
 
+/// Whether a node is an application's audio stream, the kind a route can
+/// move and that is bound for its `media.name`.
+fn is_app_stream(props: Option<&libspa::utils::dict::DictRef>) -> bool {
+    matches!(
+        props.and_then(|p| p.get("media.class")),
+        Some("Stream/Output/Audio" | "Stream/Input/Audio")
+    )
+}
+
+/// Bind an application's stream for the properties the registry leaves
+/// out, and keep its `media.name` in the node's record as it changes.
+fn watch_stream(
+    registry: &pw::registry::RegistryRc,
+    g: &pw::registry::GlobalObject<&libspa::utils::dict::DictRef>,
+    st: &Rc<RefCell<State>>,
+    graph_moved: &Rc<Cell<bool>>,
+) -> Option<(pw::node::Node, pw::node::NodeListener)> {
+    let proxy: pw::node::Node = registry.bind(g).ok()?;
+    let id = g.id;
+    let listener = proxy
+        .add_listener_local()
+        .info({
+            let (st, graph_moved) = (st.clone(), graph_moved.clone());
+            move |info| {
+                let mut st = st.borrow_mut();
+                let Some(n) = st.nodes.get_mut(&id) else { return };
+                let name = prop(info.props(), "media.name").or_else(|| n.media_name.take());
+                if !n.known || n.media_name != name {
+                    n.media_name = name;
+                    n.known = true;
+                    graph_moved.set(true);
+                }
+            }
+        })
+        .register();
+    Some((proxy, listener))
+}
+
 fn prop(props: Option<&libspa::utils::dict::DictRef>, key: &str) -> Option<String> {
     props?.get(key).map(|s| s.to_string())
 }
@@ -1038,6 +1121,8 @@ mod tests {
             description: String::new(),
             media_class: class.into(),
             app: app.map(Into::into),
+            media_name: None,
+            known: true,
             dont_move: false,
             serial,
         }
@@ -1055,7 +1140,42 @@ mod tests {
     }
 
     fn route(app: &str, record: bool, target: &str) -> RouteSpec {
-        RouteSpec { app: app.into(), record, target: target.into() }
+        RouteSpec { app: app.into(), stream: None, record, target: target.into() }
+    }
+
+    fn stream_route(app: &str, stream: &str, record: bool, target: &str) -> RouteSpec {
+        RouteSpec { stream: Some(stream.into()), ..route(app, record, target) }
+    }
+
+    #[test]
+    fn a_route_for_one_stream_takes_only_that_one_and_wins() {
+        // OBS as it really appears: every stream named "OBS", told apart by
+        // media.name only.
+        let mut nodes = graph();
+        let mut obs = |id, media: &str, serial| {
+            let mut r = rec("OBS", "Stream/Input/Audio", Some("OBS"), serial);
+            r.media_name = Some(media.into());
+            nodes.insert(id, r);
+        };
+        obs(30, "Desktop-Audio", 300);
+        obs(31, "Mic/Aux", 301);
+        nodes.insert(12, rec("pwfx.bus.other", "Audio/Source/Virtual", None, 102));
+
+        let only = [stream_route("OBS", "Mic/Aux", true, "pwfx.bus.mic")];
+        assert_eq!(plan_routes(&nodes, &only, &HashMap::new(), &mut HashMap::new()),
+                   [set(31, "pwfx.bus.mic")]);
+
+        // With the whole application on another bus, the named stream still
+        // goes its own way, whichever rule comes first.
+        let both = [route("OBS", true, "pwfx.bus.other"),
+                    stream_route("OBS", "Mic/Aux", true, "pwfx.bus.mic")];
+        assert_eq!(plan_routes(&nodes, &both, &HashMap::new(), &mut HashMap::new()),
+                   [set(30, "pwfx.bus.other"), set(31, "pwfx.bus.mic")]);
+
+        // A stream without a media.name is known by its node.name.
+        let by_node = [stream_route("Firefox", "firefox-in", true, "pwfx.bus.mic")];
+        assert_eq!(plan_routes(&nodes, &by_node, &HashMap::new(), &mut HashMap::new()),
+                   [set(21, "pwfx.bus.mic")]);
     }
 
     fn set(id: u32, t: &str) -> (u32, Option<String>) {
@@ -1137,6 +1257,64 @@ mod tests {
         nodes.get_mut(&20).unwrap().dont_move = true;
         let routes = [route("Firefox", false, "pwfx.bus.music")];
         assert!(plan_routes(&nodes, &routes, &HashMap::new(), &mut HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_stream_is_not_routed_before_its_name_is_known() {
+        let mut nodes = graph();
+        nodes.get_mut(&20).unwrap().known = false;
+        let routes = [route("Firefox", false, "pwfx.bus.music")];
+        let mut routed = HashMap::new();
+        assert!(plan_routes(&nodes, &routes, &HashMap::new(), &mut routed).is_empty());
+        nodes.get_mut(&20).unwrap().known = true;
+        assert_eq!(plan_routes(&nodes, &routes, &HashMap::new(), &mut routed),
+                   [set(20, "pwfx.bus.music")]);
+    }
+
+    /// Against the real daemon: a stream's `media.name`, which the registry
+    /// does not announce, reaches the snapshot. What the first version of
+    /// routing one stream missed -- every test fed it the name by hand.
+    /// Skips with no daemon or no `pw-cat`.
+    #[test]
+    fn a_real_streams_media_name_arrives() {
+        let media = format!("pwfx-test-{}", std::process::id());
+        let Ok(mut cat) = std::process::Command::new("pw-cat")
+            .args(["--playback", "--raw", "--target", "0", "--format", "s16",
+                   "--rate", "48000", "--channels", "1", "-P"])
+            .arg(format!("{{ media.name = \"{media}\" application.name = \"pwfx-test\" }}"))
+            .arg("-")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            eprintln!("no pw-cat; skipping");
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let pw = start(move |ev| {
+            if let PwEvent::Graph(g) = ev {
+                let _ = tx.send(g);
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut found = None;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Ok(g) = rx.recv_timeout(left) else { break };
+            if let Some(n) = g.nodes.iter().find(|n| n.app.as_deref() == Some("pwfx-test")) {
+                found = Some(n.stream_name().to_string());
+                if n.media_name.is_some() {
+                    break;
+                }
+            }
+        }
+        let _ = cat.kill();
+        let _ = cat.wait();
+        drop(pw);
+        match found {
+            Some(name) => assert_eq!(name, media),
+            None => eprintln!("the test stream never appeared; skipping (no daemon?)"),
+        }
     }
 
     /// Against the real daemon: the defaults arrive in the snapshot, and they

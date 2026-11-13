@@ -384,6 +384,14 @@ fought. Three rules in `plan_routes`, each covered by a test there:
   says what pwfx wrote -- a user who moves it in pavucontrol is not overruled.
 - Streams are known by `object.serial` as well as id. PipeWire hands a new
   stream the id of one that just ended, often within one tick.
+- A rule names a whole application or one of its streams (`state::Routed`),
+  and the one for the stream wins wherever each sits. A stream is named by
+  `media.name`, falling back to `node.name` -- never `node.name` alone: OBS
+  calls every one of its streams "OBS" and only `media.name` tells its
+  sources apart. A whole application still saves as a bare string.
+  `media.name` is not in the registry's announcement of a node, so
+  `pwthread.rs` binds every application stream for its info
+  (`watch_stream`) and routes none before that info has arrived.
 
 Metadata is not owned by the client that wrote it, so pwfx deletes its
 entries before disconnecting and waits for a roundtrip; a crash leaves them,

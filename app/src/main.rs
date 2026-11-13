@@ -50,7 +50,7 @@ use graph::{Dir, Mapping};
 use plugin::ParamKind;
 use process::ProcEvent;
 use pwthread::PwEvent;
-use state::{Bus, BusKind, Chain, Endpoint, Stage};
+use state::{Bus, BusKind, Chain, Endpoint, Routed, Stage};
 
 slint::include_modules!();
 
@@ -96,10 +96,10 @@ struct View {
     /// Port names in the matrix's row order.
     map_ports: Vec<String>,
     presets: Vec<String>,
-    /// The application picked in the bus pane's "add" list, by name, and
-    /// the names behind that list's entries. Entry 0 is the prompt.
-    bus_app_pick: Option<String>,
-    bus_app_names: Vec<String>,
+    /// The application or stream picked in the bus pane's "add" list, and
+    /// the rules behind that list's entries. Entry 0 is the prompt.
+    bus_app_pick: Option<Routed>,
+    bus_app_names: Vec<Option<Routed>>,
 }
 
 #[derive(Clone)]
@@ -706,10 +706,10 @@ impl App {
             let rows: Vec<BusAppRow> = b
                 .apps
                 .iter()
-                .map(|app| {
-                    let n = e.graph.streams_of(app, record);
+                .map(|r| {
+                    let n = routed_streams(&e, b, r);
                     BusAppRow {
-                        name: app.as_str().into(),
+                        name: r.label().into(),
                         detail: if !b.enabled {
                             "the bus is off — left where it is".into()
                         } else if n > 0 {
@@ -735,7 +735,7 @@ impl App {
             let index = v
                 .bus_app_pick
                 .as_ref()
-                .and_then(|p| names.iter().position(|n| n == p))
+                .and_then(|p| names.iter().position(|n| n.as_ref() == Some(p)))
                 .unwrap_or(0);
             if m.bus_app_key != options {
                 win.set_bus_app_options(strings(&options));
@@ -1295,14 +1295,14 @@ fn bus_detail(b: &Bus) -> String {
 fn bus_apps_hint(b: &Bus) -> &'static str {
     match (b.kind == BusKind::Source, b.apps.is_empty()) {
         (false, true) => {
-            "Send an application's sound here instead of to its own output: pick it \
-             below while it is playing. It goes back when it is removed here or when \
-             pwfx stops."
+            "Send an application's sound here instead of to its own output: pick it, \
+             or just one of its streams, below while it is playing. It goes back when \
+             it is removed here or when pwfx stops."
         }
         (true, true) => {
             "Have an application record from this bus instead of its own microphone: \
-             pick it below while it is recording. It goes back when it is removed here \
-             or when pwfx stops."
+             pick it, or just one of its streams, below while it is recording. It goes \
+             back when it is removed here or when pwfx stops."
         }
         _ => {
             "Sent here each time it starts. Moving it somewhere else yourself is left \
@@ -1315,34 +1315,71 @@ fn bus_apps_hint(b: &Bus) -> &'static str {
 /// now that it does not already have, and the names behind the entries.
 /// One that another bus of the same kind has is offered with a note,
 /// because adding it here moves it.
-fn bus_app_choices(e: &Engine, b: &Bus) -> (Vec<String>, Vec<String>) {
+///
+/// An application with more than one stream going that way also offers each
+/// of them on its own, under its own entry: that is how one OBS source goes
+/// to a bus while the rest stay where they are.
+fn bus_app_choices(e: &Engine, b: &Bus) -> (Vec<String>, Vec<Option<Routed>>) {
     let record = b.kind == BusKind::Source;
     let verb = if record { "recording" } else { "playing" };
-    let running: Vec<String> = e
-        .graph
-        .apps(record)
-        .into_iter()
-        .filter(|a| !b.apps.contains(a))
-        .collect();
-    let mut options = vec![if running.is_empty() {
+    let mut offered: Vec<Routed> = Vec::new();
+    for app in e.graph.apps(record) {
+        let streams = e.graph.stream_names(&app, record);
+        let whole = Routed::App(app.clone());
+        if !b.apps.contains(&whole) {
+            offered.push(whole);
+        }
+        if streams.len() > 1 {
+            offered.extend(
+                streams
+                    .into_iter()
+                    .map(|stream| Routed::Stream { app: app.clone(), stream })
+                    .filter(|r| !b.apps.contains(r)),
+            );
+        }
+    }
+    let mut options = vec![if offered.is_empty() {
         format!("— no application is {verb} right now —")
     } else {
         format!("— add an application that is {verb} —")
     }];
-    let mut names = vec![String::new()];
-    for app in running {
+    let mut names = vec![None];
+    for r in offered {
         let elsewhere = e
             .state
             .buses
             .iter()
-            .find(|o| o.id != b.id && o.kind == b.kind && o.apps.contains(&app));
+            .find(|o| o.id != b.id && o.kind == b.kind && o.apps.contains(&r));
+        let label = match &r {
+            Routed::App(a) => format!("{a}  ·  all streams"),
+            Routed::Stream { .. } => r.label(),
+        };
         options.push(match elsewhere {
-            Some(o) => format!("{app}  ·  now on {}", o.description()),
-            None => app.clone(),
+            Some(o) => format!("{label}  ·  now on {}", o.description()),
+            None => label,
         });
-        names.push(app);
+        names.push(Some(r));
     }
     (options, names)
+}
+
+/// How many streams a bus's rule sends there right now. A whole
+/// application's rule does not count the streams a rule for one of them --
+/// on whichever bus -- takes elsewhere, because that one wins.
+fn routed_streams(e: &Engine, b: &Bus, r: &Routed) -> usize {
+    let record = b.kind == BusKind::Source;
+    let claimed = |name: &str| {
+        e.state.buses.iter().filter(|o| o.enabled && o.kind == b.kind).any(|o| {
+            o.apps.iter().any(|x| x.app() == r.app() && x.stream() == Some(name))
+        })
+    };
+    e.graph
+        .streams(r.app(), record)
+        .filter(|n| match r.stream() {
+            Some(s) => n.stream_name() == s,
+            None => !claimed(n.stream_name()),
+        })
+        .count()
 }
 
 fn bus_status(e: &Engine, b: &Bus) -> String {
@@ -1622,7 +1659,7 @@ impl App {
 
         on!(on_pick_bus_app, |app, i| {
             app.look(move |v| {
-                v.bus_app_pick = v.bus_app_names.get(i.max(0) as usize).filter(|n| !n.is_empty()).cloned();
+                v.bus_app_pick = v.bus_app_names.get(i.max(0) as usize).cloned().flatten();
             });
         });
         on!(on_add_bus_app, |app| {
@@ -1631,9 +1668,11 @@ impl App {
                 let Some(kind) = e.state.buses.get(v.selected_bus).map(|b| b.kind) else {
                     return;
                 };
-                // One bus per application and direction, so the state can
-                // never send one stream two ways: adding it here takes it
-                // off any other bus of the same kind.
+                // One bus per rule and direction, so the state can never
+                // send one stream two ways: adding it here takes it off any
+                // other bus of the same kind. (A rule for one stream and
+                // one for its whole application can sit on different
+                // buses: the one for the stream wins, in `plan_routes`.)
                 let mut moved_from = Vec::new();
                 for (i, b) in e.state.buses.iter_mut().enumerate() {
                     if i != v.selected_bus && b.kind == kind && b.apps.contains(&name) {
@@ -1647,7 +1686,7 @@ impl App {
                 }
                 let here = b.description();
                 for from in moved_from {
-                    e.note(format!("{name} moved from {from} to {here}"), false);
+                    e.note(format!("{} moved from {from} to {here}", name.label()), false);
                 }
             });
         });
@@ -2190,6 +2229,80 @@ mod arg_tests {
     }
 }
 
+/// What a bus offers to route, and what it counts as routed.
+#[cfg(test)]
+mod bus_app_tests {
+    use super::*;
+
+    fn bus(id: &str) -> Bus {
+        Bus {
+            id: id.into(),
+            name: id.into(),
+            enabled: true,
+            width: 2,
+            kind: BusKind::Source,
+            apps: Vec::new(),
+        }
+    }
+
+    /// OBS as it really appears: two recording streams, both named "OBS",
+    /// told apart by media.name.
+    fn engine() -> Engine {
+        let mut st = state::AppState::default();
+        st.buses = vec![bus("mic"), bus("desk")];
+        let mut e = Engine::new(Vec::new(), st, Arc::new(|_| {}));
+        let obs = |media: &str| graph::Node {
+            id: 1,
+            name: "OBS".into(),
+            description: "OBS".into(),
+            media_class: "Stream/Input/Audio".into(),
+            app: Some("OBS".into()),
+            media_name: Some(media.into()),
+            ports: Vec::new(),
+        };
+        let zoom = graph::Node { app: Some("Zoom".into()), media_name: None, ..obs("") };
+        e.graph = graph::Graph {
+            nodes: vec![obs("Desktop-Audio"), obs("Mic/Aux"), zoom],
+            connected: true,
+            ..Default::default()
+        };
+        e
+    }
+
+    fn stream(s: &str) -> Routed {
+        Routed::Stream { app: "OBS".into(), stream: s.into() }
+    }
+
+    #[test]
+    fn an_application_with_several_streams_offers_each() {
+        let mut e = engine();
+        let (options, names) = bus_app_choices(&e, &e.state.buses[0]);
+        assert_eq!(&options[1..], ["OBS  ·  all streams", "OBS › Desktop-Audio",
+                                   "OBS › Mic/Aux", "Zoom  ·  all streams"]);
+        assert_eq!(names[2], Some(stream("Desktop-Audio")));
+
+        // What a bus has is not offered again; what another has says so.
+        e.state.buses[0].apps.push(stream("Mic/Aux"));
+        let (options, _) = bus_app_choices(&e, &e.state.buses[0]);
+        assert!(!options.iter().any(|o| o.contains("Mic/Aux")), "{options:?}");
+        let (options, _) = bus_app_choices(&e, &e.state.buses[1]);
+        assert!(options.contains(&"OBS › Mic/Aux  ·  now on mic".to_string()), "{options:?}");
+    }
+
+    #[test]
+    fn a_whole_application_does_not_count_a_stream_routed_elsewhere() {
+        let mut e = engine();
+        e.state.buses[0].apps.push(stream("Mic/Aux"));
+        e.state.buses[1].apps.push("OBS".into());
+        assert_eq!(routed_streams(&e, &e.state.buses[0], &stream("Mic/Aux")), 1);
+        assert_eq!(routed_streams(&e, &e.state.buses[1], &"OBS".into()), 1);
+        // Switched off, the stream's rule takes nothing, so the whole
+        // application's gets it back.
+        e.state.buses[0].enabled = false;
+        assert_eq!(routed_streams(&e, &e.state.buses[1], &"OBS".into()), 2);
+    }
+}
+
 /// What the two endpoint pickers offer, which is the one place a bus has to
 /// behave unlike the app's other nodes.
 #[cfg(test)]
@@ -2204,6 +2317,7 @@ mod picker_tests {
             description: name.into(),
             media_class: class.into(),
             app: None,
+            media_name: None,
             ports: vec![Port {
                 id: 2,
                 name: "p".into(),
@@ -2627,6 +2741,7 @@ mod window_tests {
             description: name.into(),
             media_class: "Stream/Output/Audio".into(),
             app: Some(app.into()),
+            media_name: None,
             ports: Vec::new(),
         };
         engine.graph = graph::Graph {

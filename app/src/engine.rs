@@ -173,8 +173,9 @@ impl Engine {
             .iter()
             .filter(|b| b.enabled)
             .flat_map(|b| {
-                b.apps.iter().map(move |app| RouteSpec {
-                    app: app.clone(),
+                b.apps.iter().map(move |r| RouteSpec {
+                    app: r.app().to_string(),
+                    stream: r.stream().map(Into::into),
                     record: b.kind == BusKind::Source,
                     target: b.node_name(),
                 })
@@ -763,7 +764,7 @@ mod tests {
     use super::*;
     use crate::graph::{Mapping, Node, Port};
     use crate::plugin::parse_help;
-    use crate::state::{BusKind, Endpoint, Stage};
+    use crate::state::{BusKind, Endpoint, Routed, Stage};
 
     fn plugins() -> Vec<PluginDesc> {
         ["pw_hpf", "pw_comp", "pw_sccomp"]
@@ -864,6 +865,7 @@ mod tests {
             description: name.into(),
             media_class: "Audio/Source".into(),
             app: None,
+            media_name: None,
             ports: channels
                 .iter()
                 .enumerate()
@@ -1216,10 +1218,14 @@ mod tests {
         off.enabled = false;
         e.state.buses = vec![music, mic, off];
 
+        e.state.buses[1].apps.push(Routed::Stream { app: "OBS".into(), stream: "Mic/Aux".into() });
         let got: Vec<(String, bool, String)> = e
             .desired_routes()
             .into_iter()
-            .map(|r| (r.app, r.record, r.target))
+            .map(|r| match r.stream {
+                Some(s) => (format!("{} › {s}", r.app), r.record, r.target),
+                None => (r.app, r.record, r.target),
+            })
             .collect();
         assert_eq!(
             got,
@@ -1228,6 +1234,8 @@ mod tests {
                 ("mpv".into(), false, "pwfx.bus.music".into()),
                 // A source bus is recorded from.
                 ("Zoom".into(), true, "pwfx.bus.mic".into()),
+                // One stream of an application, by its name.
+                ("OBS › Mic/Aux".into(), true, "pwfx.bus.mic".into()),
                 // A switched-off bus routes nothing.
             ]
         );

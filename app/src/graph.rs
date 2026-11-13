@@ -35,6 +35,9 @@ pub struct Node {
     pub media_class: String,
     /// `application.name`, on an application's streams.
     pub app: Option<String>,
+    /// `media.name`, which on an application's stream says which of its
+    /// streams this is.
+    pub media_name: Option<String>,
     pub ports: Vec<Port>,
 }
 
@@ -47,6 +50,12 @@ impl Node {
             "Stream/Input/Audio" => Some(true),
             _ => None,
         }
+    }
+
+    /// The name a route for one stream knows it by: `media.name`, or the
+    /// `node.name` of a stream that has none.
+    pub fn stream_name(&self) -> &str {
+        self.media_name.as_deref().unwrap_or(&self.name)
     }
 
     pub fn ports_in(&self, dir: Dir) -> impl Iterator<Item = &Port> {
@@ -199,12 +208,23 @@ impl Graph {
         v
     }
 
-    /// How many streams that application has going that way.
-    pub fn streams_of(&self, app: &str, record: bool) -> usize {
+    /// The names of that application's streams going that way, sorted and
+    /// each once.
+    pub fn stream_names(&self, app: &str, record: bool) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .streams(app, record)
+            .map(|n| n.stream_name().to_string())
+            .collect();
+        v.sort_by_key(|s| s.to_lowercase());
+        v.dedup();
+        v
+    }
+
+    /// That application's streams going that way.
+    pub fn streams<'a>(&'a self, app: &'a str, record: bool) -> impl Iterator<Item = &'a Node> {
         self.nodes
             .iter()
-            .filter(|n| n.stream_records() == Some(record) && n.app.as_deref() == Some(app))
-            .count()
+            .filter(move |n| n.stream_records() == Some(record) && n.app.as_deref() == Some(app))
     }
 
     /// Nodes that can act as an endpoint in the given direction, grouped and
@@ -413,6 +433,7 @@ mod tests {
             description: "dev".into(),
             media_class: "Audio/Source".into(),
             app: None,
+            media_name: None,
             ports: ports
                 .iter()
                 .enumerate()
@@ -522,8 +543,13 @@ mod tests {
         };
         assert_eq!(g.apps(false), ["Firefox", "mpv"]);
         assert_eq!(g.apps(true), ["Zoom"]);
-        assert_eq!(g.streams_of("Firefox", false), 2);
-        assert_eq!(g.streams_of("Firefox", true), 0);
+        assert_eq!(g.streams("Firefox", false).count(), 2);
+        assert_eq!(g.streams("Firefox", true).count(), 0);
+        // Told apart by media.name where they have one, node.name where not.
+        assert_eq!(g.stream_names("Firefox", false), ["ff-1", "ff-2"]);
+        let mut g = g;
+        g.nodes[0].media_name = Some("Desktop".into());
+        assert_eq!(g.stream_names("Firefox", false), ["Desktop", "ff-2"]);
     }
 
     #[test]
