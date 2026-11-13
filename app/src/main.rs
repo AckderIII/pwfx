@@ -1316,9 +1316,12 @@ fn bus_apps_hint(b: &Bus) -> &'static str {
 /// One that another bus of the same kind has is offered with a note,
 /// because adding it here moves it.
 ///
-/// An application with more than one stream going that way also offers each
-/// of them on its own, under its own entry: that is how one OBS source goes
-/// to a bus while the rest stay where they are.
+/// Every application also offers each of its streams going that way on its
+/// own, under its own entry -- that is how one OBS source goes to a bus
+/// while the rest stay where they are. Even an application with only one:
+/// how many streams it has can change mid-session (a source added during a
+/// live stream), and a rule for that one stream should not have to wait for
+/// a second to exist.
 fn bus_app_choices(e: &Engine, b: &Bus) -> (Vec<String>, Vec<Option<Routed>>) {
     let record = b.kind == BusKind::Source;
     let verb = if record { "recording" } else { "playing" };
@@ -1329,14 +1332,12 @@ fn bus_app_choices(e: &Engine, b: &Bus) -> (Vec<String>, Vec<Option<Routed>>) {
         if !b.apps.contains(&whole) {
             offered.push(whole);
         }
-        if streams.len() > 1 {
-            offered.extend(
-                streams
-                    .into_iter()
-                    .map(|stream| Routed::Stream { app: app.clone(), stream })
-                    .filter(|r| !b.apps.contains(r)),
-            );
-        }
+        offered.extend(
+            streams
+                .into_iter()
+                .map(|stream| Routed::Stream { app: app.clone(), stream })
+                .filter(|r| !b.apps.contains(r)),
+        );
     }
     let mut options = vec![if offered.is_empty() {
         format!("— no application is {verb} right now —")
@@ -2260,7 +2261,12 @@ mod bus_app_tests {
             media_name: Some(media.into()),
             ports: Vec::new(),
         };
-        let zoom = graph::Node { app: Some("Zoom".into()), media_name: None, ..obs("") };
+        let zoom = graph::Node {
+            name: "zoom".into(),
+            app: Some("Zoom".into()),
+            media_name: None,
+            ..obs("")
+        };
         e.graph = graph::Graph {
             nodes: vec![obs("Desktop-Audio"), obs("Mic/Aux"), zoom],
             connected: true,
@@ -2277,8 +2283,10 @@ mod bus_app_tests {
     fn an_application_with_several_streams_offers_each() {
         let mut e = engine();
         let (options, names) = bus_app_choices(&e, &e.state.buses[0]);
+        // Zoom's one stream too: a second may start later, and the rule for
+        // the first should not have to wait for it.
         assert_eq!(&options[1..], ["OBS  ·  all streams", "OBS › Desktop-Audio",
-                                   "OBS › Mic/Aux", "Zoom  ·  all streams"]);
+                                   "OBS › Mic/Aux", "Zoom  ·  all streams", "Zoom › zoom"]);
         assert_eq!(names[2], Some(stream("Desktop-Audio")));
 
         // What a bus has is not offered again; what another has says so.
@@ -2767,7 +2775,7 @@ mod window_tests {
 
         app.refresh();
         let options = win.get_bus_app_options();
-        assert_eq!(options.row_count(), 3, "the prompt, Firefox and mpv");
+        assert_eq!(options.row_count(), 5, "the prompt, Firefox and mpv, each whole and its stream");
         let (apps, uses, widths) = (win.get_bus_apps(), win.get_bus_uses(), win.get_bus_width_options());
         app.refresh();
         assert!(win.get_bus_app_options() == options, "the application list was replaced");
@@ -2779,7 +2787,7 @@ mod window_tests {
         app.engine.borrow_mut().graph.nodes.pop();
         app.refresh();
         assert!(win.get_bus_app_options() != options);
-        assert_eq!(win.get_bus_app_options().row_count(), 2);
+        assert_eq!(win.get_bus_app_options().row_count(), 3);
 
         // And the chain view's width list, which had the same fault.
         app.view.borrow_mut().focus = Focus::Chain;

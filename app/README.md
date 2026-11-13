@@ -62,8 +62,8 @@ See [Running without the window](#running-without-the-window).
   somewhere else yourself, in pavucontrol say, is left alone until it next
   starts. One application goes to one bus of each kind, so adding it to a
   second moves it.
-  An application with more than one stream going that way also offers each
-  stream on its own, by its name -- OBS's are its audio sources, "Mic/Aux",
+  Each application also offers each of its streams on its own, by its name,
+  even when it has only one -- the number can change mid-session -- OBS's are its audio sources, "Mic/Aux",
   "Desktop Audio" -- so one source can go to a bus while the rest stay where
   they are. A rule for one stream wins over one for its whole application,
   so the two can sit on different buses. (A stream is named by `media.name`,
