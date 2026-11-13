@@ -12,9 +12,9 @@
 //! is undoable, with a sensible name, without touching this file. Two
 //! things are kept out:
 //!
-//! - `meters`, which is how the window looks rather than what it does.
-//!   Toggling it records nothing, and an undo keeps the current setting
-//!   rather than reviving whatever it was back then.
+//! - `meters` and `collapsed`, which are how the window looks rather than
+//!   what it does. Toggling either records nothing, and an undo keeps the
+//!   current setting rather than reviving whatever it was back then.
 //! - Values a filter reported back (`Engine::absorb_reports`): those are the
 //!   filter correcting the state, not the user changing it, and they do not
 //!   go through an edit at all.
@@ -91,7 +91,7 @@ impl History {
     }
 }
 
-/// Whether two states differ in anything but `meters`.
+/// Whether two states differ in anything but `meters` and `collapsed`.
 pub fn differs(a: &AppState, b: &AppState) -> bool {
     a.chains != b.chains || a.buses != b.buses || a.version != b.version
 }
@@ -357,6 +357,14 @@ mod tests {
         let a = state();
         let mut b = a.clone();
         b.meters = !a.meters;
+        assert!(!differs(&a, &b));
+    }
+
+    #[test]
+    fn folding_a_card_is_not_an_edit() {
+        let a = state();
+        let mut b = a.clone();
+        b.collapsed.insert("pwfx.voice.hpf".into());
         assert!(!differs(&a, &b));
     }
 

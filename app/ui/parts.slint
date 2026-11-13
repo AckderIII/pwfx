@@ -27,6 +27,8 @@ export struct StageRow {
     title: string,
     summary: string,
     bypass: bool,
+    // Folded down to the header and the meters.
+    collapsed: bool,
     running: bool,
     latency: string,
     error: string,
@@ -578,6 +580,7 @@ export component StageCard inherits Rectangle {
     in property <[string]> sc-options;
 
     callback set-bypass(bool);
+    callback set-collapsed(bool);
     callback set-sidechain(int);
     callback remove();
     callback move(int);      // -1 up, +1 down
@@ -600,6 +603,13 @@ export component StageCard inherits Rectangle {
             spacing: Theme.gap;
             alignment: stretch;
 
+            // Folds the card to its header and meters: everything below
+            // them -- sidechain, parameters, curve -- goes.
+            Btn {
+                text: root.s.collapsed ? "▸" : "▾";
+                pad-h: 6px;
+                clicked => { root.set-collapsed(!root.s.collapsed); }
+            }
             Rectangle {
                 width: 8px;
                 height: 8px;
@@ -713,7 +723,7 @@ export component StageCard inherits Rectangle {
         }
 
         // --- what the sidechain listens to ------------------------------
-        if root.s.has-sidechain : HorizontalLayout {
+        if root.s.has-sidechain && !root.s.collapsed : HorizontalLayout {
             spacing: Theme.gap;
             Text {
                 text: "sidechain";
@@ -738,10 +748,10 @@ export component StageCard inherits Rectangle {
             }
         }
 
-        Rectangle { height: 1px; background: Theme.line; }
+        if !root.s.collapsed : Rectangle { height: 1px; background: Theme.line; }
 
         // --- parameters -----------------------------------------------
-        for p in root.s.params : ParamEditor {
+        for p in root.s.collapsed ? [] : root.s.params : ParamEditor {
             p: p;
             enabled: root.s.running;
             slide(v) => { root.slide(p.name, v); }
@@ -751,7 +761,7 @@ export component StageCard inherits Rectangle {
         }
 
         // --- the response, as the filter reports it ---------------------
-        if root.curve.kind != "" : CurvePlot {
+        if root.curve.kind != "" && !root.s.collapsed : CurvePlot {
             c: root.curve;
             live: root.s.running && !root.s.bypass;
         }

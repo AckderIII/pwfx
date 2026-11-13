@@ -14,7 +14,7 @@
 //! having to do anything about it: the name resolves again and the links come
 //! back.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -236,6 +236,11 @@ pub struct AppState {
     /// per block in the filter, so it is switchable.
     #[serde(default = "yes")]
     pub meters: bool,
+    /// The stage cards folded down to their header and meters, by node name
+    /// (`pwfx.<chain>.<stage>`, made from ids, so a rename keeps it). How
+    /// the window looks, like `meters`: not an edit, and kept across undo.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub collapsed: BTreeSet<String>,
 }
 
 fn yes() -> bool {
@@ -249,6 +254,7 @@ impl Default for AppState {
             chains: Vec::new(),
             buses: Vec::new(),
             meters: true,
+            collapsed: BTreeSet::new(),
         }
     }
 }
@@ -643,6 +649,7 @@ mod tests {
         let st = AppState {
             version: FORMAT_VERSION,
             meters: false,
+            collapsed: ["pwfx.voice.hpf".to_string()].into(),
             chains: vec![Chain {
                 id: "voice".into(),
                 name: "Voice".into(),

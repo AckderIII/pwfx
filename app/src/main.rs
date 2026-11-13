@@ -501,11 +501,12 @@ impl App {
 
     /// Step back, or forward. The state put back is applied like any other,
     /// so the reconcile loops restart only what the step actually moved.
-    /// The meters stay as they are now: they are how the window looks, not
-    /// part of what was edited.
+    /// The meters and folded cards stay as they are now: they are how the
+    /// window looks, not part of what was edited.
     fn step(&self, forward: bool) {
         let current = self.engine.borrow().state.clone();
         let meters = current.meters;
+        let collapsed = current.collapsed.clone();
         let got = if forward {
             self.history.borrow_mut().redo(current)
         } else {
@@ -513,6 +514,7 @@ impl App {
         };
         let Some((mut st, label)) = got else { return };
         st.meters = meters;
+        st.collapsed = collapsed;
         {
             let mut e = self.engine.borrow_mut();
             let mut v = self.view.borrow_mut();
@@ -1184,6 +1186,7 @@ fn stage_row(
             title: desc.name.as_str().into(),
             summary: desc.summary.as_str().into(),
             bypass: stage.bypass,
+            collapsed: e.state.collapsed.contains(&node),
             running: rt.running,
             latency: latency_text(&rt).into(),
             error: rt.last_error.as_str().into(),
@@ -1195,6 +1198,7 @@ fn stage_row(
             title: stage.plugin.as_str().into(),
             summary: "not installed".into(),
             bypass: stage.bypass,
+            collapsed: e.state.collapsed.contains(&node),
             running: false,
             latency: "".into(),
             error: format!("No filter called {} was found.", stage.plugin).into(),
@@ -1853,6 +1857,34 @@ impl App {
                     .and_then(|c| c.stages.get_mut(i.max(0) as usize))
                 {
                     s.bypass = on;
+                }
+            });
+        });
+
+        // Folding a card is how the window looks, so it goes through `edit`
+        // only to be saved and redrawn; `differs` keeps it out of the
+        // history. Names of stages that are gone are dropped on the way.
+        on!(on_set_collapsed, |app, i, on| {
+            app.edit(move |e, v| {
+                let live: std::collections::BTreeSet<String> = e
+                    .state
+                    .chains
+                    .iter()
+                    .flat_map(|c| c.stages.iter().map(|s| c.node_name(s)))
+                    .collect();
+                let Some(node) = e
+                    .state
+                    .chains
+                    .get(v.selected)
+                    .and_then(|c| c.stages.get(i.max(0) as usize).map(|s| c.node_name(s)))
+                else {
+                    return;
+                };
+                e.state.collapsed.retain(|n| live.contains(n));
+                if on {
+                    e.state.collapsed.insert(node);
+                } else {
+                    e.state.collapsed.remove(&node);
                 }
             });
         });
