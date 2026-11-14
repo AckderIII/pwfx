@@ -158,6 +158,7 @@ export component AppWindow inherits Window {
 
     callback select-chain(int);
     callback add-chain();
+    callback duplicate-chain();
     callback remove-chain();
     callback rename-chain(string);
     callback set-chain-enabled(bool);
@@ -511,6 +512,10 @@ export component AppWindow inherits Window {
                                     overflow: elide;
                                 }
                                 Rectangle { horizontal-stretch: 1; }
+                                Btn {
+                                    text: "Duplicate";
+                                    clicked => { root.duplicate-chain(); }
+                                }
                                 Btn {
                                     text: "Delete chain";
                                     danger: true;

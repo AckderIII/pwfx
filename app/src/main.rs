@@ -1614,6 +1614,16 @@ impl App {
             });
         });
 
+        on!(on_duplicate_chain, |app| {
+            app.edit(|e, v| {
+                if let Some(i) = e.state.duplicate_chain(v.selected) {
+                    v.selected = i;
+                    v.focus = Focus::Chain;
+                    v.map = None;
+                }
+            });
+        });
+
         on!(on_remove_chain, |app| {
             app.edit(|e, v| {
                 if v.selected < e.state.chains.len() {
@@ -3048,7 +3058,7 @@ mod window_tests {
                 .iter()
                 .map(|e| ("a dropdown".to_string(), e.absolute_position().x + e.size().width)),
         );
-        for want in ["Restore default", "Delete chain"] {
+        for want in ["Restore default", "Duplicate", "Delete chain"] {
             assert!(seen.iter().any(|(t, _)| t == want), "no {want:?} in {seen:?}");
         }
         for (text, right) in &seen {

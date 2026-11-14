@@ -271,6 +271,30 @@ impl AppState {
         })
     }
 
+    /// Copy chain `i` in beside it and return where the copy went.
+    ///
+    /// Everything is copied -- stages with their ids, parameters, bypass and
+    /// sidechains, both endpoints, the width, which cards are folded -- but
+    /// the copy gets a fresh id, so its stages run as nodes of their own, and
+    /// it starts stopped: running at once on the same input and output, it
+    /// would add a second copy of the signal to the first.
+    pub fn duplicate_chain(&mut self, i: usize) -> Option<usize> {
+        let src = self.chains.get(i)?;
+        let mut copy = src.clone();
+        copy.name = format!("{} copy", src.name);
+        copy.id = self.fresh_chain_id(&copy.name);
+        copy.enabled = false;
+        let folded: Vec<String> = src
+            .stages
+            .iter()
+            .filter(|s| self.collapsed.contains(&src.node_name(s)))
+            .map(|s| copy.node_name(s))
+            .collect();
+        self.collapsed.extend(folded);
+        self.chains.insert(i + 1, copy);
+        Some(i + 1)
+    }
+
     pub fn fresh_bus_id(&self, name: &str) -> String {
         unique(&slug(name), |c| self.buses.iter().any(|x| x.id == c))
     }
@@ -560,6 +584,44 @@ mod tests {
         }
         let ids: Vec<&str> = st.chains.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["voice", "voice-2", "voice-3"]);
+    }
+
+    #[test]
+    fn a_duplicate_is_the_same_chain_under_its_own_id_and_stopped() {
+        let mut st = AppState::default();
+        let stage = Stage {
+            id: "comp".into(),
+            plugin: "pw_comp".into(),
+            bypass: true,
+            params: [("threshold".to_string(), "-20".to_string())].into(),
+            sidechain: None,
+        };
+        let mic = Endpoint { node: "MyMic".into(), label: "Mic".into(), mapping: Default::default() };
+        st.chains.push(Chain {
+            id: "voice".into(),
+            name: "Voice".into(),
+            enabled: true,
+            width: 1,
+            stages: vec![stage.clone()],
+            input: Some(mic.clone()),
+            output: None,
+        });
+        st.chains.push(Chain { id: "other".into(), name: "Other".into(), ..st.chains[0].clone() });
+        st.collapsed.insert("pwfx.voice.comp".into());
+
+        assert_eq!(st.duplicate_chain(0), Some(1));
+        let c = &st.chains[1];
+        assert_eq!((c.id.as_str(), c.name.as_str()), ("voice-copy", "Voice copy"));
+        assert!(!c.enabled, "a copy on the same ends would double the signal");
+        assert_eq!((c.width, &c.stages, &c.input), (1, &vec![stage], &Some(mic)));
+        assert_eq!(st.chains[2].id, "other", "the copy goes in beside its original");
+        assert!(st.collapsed.contains("pwfx.voice-copy.comp"));
+        assert!(st.chains[0].enabled);
+
+        // Again, from the same original: the id must not collide.
+        st.duplicate_chain(0);
+        assert_eq!(st.chains[1].id, "voice-copy-2");
+        assert_eq!(st.duplicate_chain(9), None);
     }
 
     #[test]
