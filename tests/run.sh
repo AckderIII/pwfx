@@ -87,6 +87,15 @@ echo "notch against its design:"
 python3 tests/notch.py
 fails=$((fails+$?))
 
+# The reverb: the comparison proves core and reference agree, this that the
+# tail decays in the time asked for at both ends of the band, is as dense
+# as noise, comes out decorrelated, waits for its predelay, and glides
+# rather than clicks when it is changed.
+echo
+echo "reverb against acoustics and its design:"
+python3 tests/reverb.py
+fails=$((fails+$?))
+
 # The noise suppressor: the comparison proves the framing, this measures what
 # it is for -- on real speech, and that RNNoise's delay is what it assumes.
 echo

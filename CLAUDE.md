@@ -2,13 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Thirteen audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_notch`, `pw_gate`,
-`pw_comp`, `pw_sccomp`, `pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`,
-`pw_denoise`, `pw_level`), each a standalone PipeWire filter node built on
-`pw_filter`; all but `pw_gain` with a raw stdin/stdout reference
-implementation in `reference/` behind them -- six ported from theirs,
-`pw_notch`, `pw_delay`, `pw_deess`, `pw_denoise` and `pw_level` written
-here together with their own, `pw_sccomp` held to
+Fourteen audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_notch`, `pw_gate`,
+`pw_comp`, `pw_sccomp`, `pw_limit`, `pw_gain`, `pw_delay`, `pw_reverb`,
+`pw_deess`, `pw_denoise`, `pw_level`), each a standalone PipeWire filter
+node built on `pw_filter`; all but `pw_gain` with a raw stdin/stdout
+reference implementation in `reference/` behind them -- six ported from
+theirs, `pw_notch`, `pw_delay`, `pw_reverb`, `pw_deess`, `pw_denoise` and
+`pw_level` written here together with their own, `pw_sccomp` held to
 `pw_comp`'s -- and `pw_gain` with none; plus
 `app/`, a Rust and Slint desktop app that drives them as plugins.
 
@@ -243,6 +243,25 @@ it). `harmonics` keeps q, not the width in Hz, so each harmonic is as wide
 as it drifts. The curve adds each notch's centre and edges to the shared
 grid, which a narrow notch falls between.
 
+**`pw_reverb` glides; the reference does not, and must not need to.**
+Every length, the modulation depth, each line's shelf, the low-cut and
+the mix move to a new value through two one-pole stages, at a rate taken
+afresh every sample from what is left to go, so a length's speed ramps
+(one stage gave a kink at every start, the pitch jumping) and is capped:
+half a sample per sample in the diffuser, a twentieth in the tank, whose
+allpass reads hiss when a delay moves fast. The shelves glide with their
+lines -- switched at once, they stepped, and that step was the click
+that was left. Each limit was found by `tests/reverb.py`'s glide check:
+a 220 Hz tone all wet has nothing above 3 kHz and a click everything.
+Settled, every length is an integer and every coefficient its target
+exactly, which is what keeps the core byte-identical to a reference with
+fixed settings -- keep any new glide snapping to its target. The decay is
+exact only at DC and Nyquist (Jot's first-order shelves), so the test
+reads RT60 far from `damp-freq`; and the allpasses rather than an
+interpolator carry the modulation because an interpolator's HF loss is
+paid once per pass, hundreds of times over a tail. Its latency is 0, as
+`pw_delay`'s is, for the same reason.
+
 **Except `pw_delay`, which reports 0 on purpose.** Its delay is the effect, not
 processing it needs: reported, the graph would compensate it away, and lining
 one source up with another is the whole point of a plain delay. Do not "fix"
@@ -258,7 +277,7 @@ apart than one.
 same coefficients, same transposed direct form II, same double-precision state,
 same denormal flushing. `make test` proves it by running each filter's actual
 core through the reference's stream handling and `cmp`-ing against the reference
-binary — currently 86 cases (plus `tests/sccomp.py`'s twelve) across orders, block sizes, sidechain settings and
+binary — currently 97 cases (plus `tests/sccomp.py`'s twelve) across orders, block sizes, sidechain settings and
 edges, all byte-identical, plus four that drive the limiter hard into its
 ceiling and insist the breach count stays zero.
 
@@ -276,7 +295,9 @@ core in `deess_dsp.h`, absorbed in `tests/t_deess.c` like the gate's.
 prints the core's gain per block for `tests/level.py`. `pw_notch` keeps its
 core in `notch_dsp.h` but has no delay line, so `tests/t_notch.c` is
 `t_hpf.c`'s shape around it, and `tests/notch.py` checks what the two agree
-on against the design (see above). `pw_delay` keeps its core in
+on against the design (see above). `pw_reverb` is the same shape in
+`reverb_dsp.h` and `tests/t_reverb.c`, whose `-X/-Y/-Z` redesign it
+mid-stream for the glide check. `pw_delay` keeps its core in
 `delay_dsp.h` too, but needs no absorbing: the delay is its output in the
 reference as well, and `tests/impulse.py` checks the impulse response the two
 agree on against theory.
@@ -374,7 +395,7 @@ it that way: an edit made around `edit` is an edit that cannot be undone.
 
 **The AppImage bundles nothing but the binaries** (`packaging/appimage/`). Every
 binary links only libc, libm, libgcc_s and libpipewire, and the GUI loads its
-display libraries at runtime, so the AppDir is the fourteen executables, a
+display libraries at runtime, so the AppDir is the fifteen executables, a
 `.desktop` file, an icon and RNNoise's licence, which its BSD terms ask for
 in binary distributions too. `libpipewire` must stay the host's: it loads its
 own modules from the host's paths. `inside.sh` fails the build if a binary

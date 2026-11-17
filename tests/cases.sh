@@ -108,3 +108,22 @@ run_case notch -r $RATE -c $CH -b 256  -f 400 -Q 0.5 -n 4
 run_case notch -r $RATE -c 1   -b 4096 -f 50 -Q 300 -n 8 -H 4
 run_case notch -r $RATE -c $CH -b 1    -f 21000 -Q 30 -n 2
 run_case notch -r $RATE -c $CH -b 333  -f 60 -Q 10 -n 1 -H 16
+
+# The reverb: the defaults, no modulation (the allpasses as exact integer
+# delays), the smallest room with no predelay and the largest with the
+# longest, a low cut, the shortest and darkest decay and the longest and
+# brightest, damp-freq past Nyquist (clamped), 1, 5 and 17 channels (the
+# Hadamard rows, and their wrap past 15), another rate, and block sizes
+# from 1 frame to 4096 -- the oscillators renormalise by sample count, so
+# the blocks must not show.
+run_case reverb -r $RATE -c $CH -b 128
+run_case reverb -r $RATE -c $CH -b 97   -M 0
+run_case reverb -r $RATE -c $CH -b 1    -s 10 -p 0 -M 100
+run_case reverb -r $RATE -c $CH -b 4096 -s 100 -p 250 -d 10 -m 100
+run_case reverb -r $RATE -c $CH -b 333  -L 200 -m 60
+run_case reverb -r $RATE -c $CH -b 256  -d 0.1 -H 5 -F 100 -m 100
+run_case reverb -r $RATE -c $CH -b 128  -d 60 -H 100 -F 20000 -m 50
+run_case reverb -r $RATE -c 1   -b 480  -s 35 -p 3.3 -M 45
+run_case reverb -r $RATE -c 5   -b 128  -m 70
+run_case reverb -r $RATE -c 17  -b 64   -m 100 -M 10
+run_case reverb -r 44100 -c $CH -b 441  -s 55 -d 3.5 -L 80

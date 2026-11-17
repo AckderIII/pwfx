@@ -585,10 +585,11 @@ mod against_the_real_filters {
             assert!(d.param("latency").unwrap().readonly);
 
             // Every filter in the tree draws a curve but the delay, whose
-            // response is a comb far finer than any plot, and the noise
-            // suppressor, whose response adapts to what it hears -- and each
-            // says so.
-            let curveless = ["pw_delay", "pw_denoise"].contains(&d.name.as_str());
+            // response is a comb far finer than any plot, the noise
+            // suppressor, whose response adapts to what it hears, and the
+            // reverb, whose response is a forest of modes that a magnitude
+            // curve would show as noise -- and each says so.
+            let curveless = ["pw_delay", "pw_denoise", "pw_reverb"].contains(&d.name.as_str());
             assert_eq!(d.curve, !curveless, "{}: --curve in its help", d.name);
 
             // A sidechain input on the sidechain compressor and nothing

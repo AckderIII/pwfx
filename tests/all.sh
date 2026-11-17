@@ -32,7 +32,8 @@ step "2. control protocol"
 run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
                               bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain \
                               bin/pw_delay bin/pw_deess bin/pw_denoise \
-                              bin/pw_sccomp bin/pw_level bin/pw_notch
+                              bin/pw_sccomp bin/pw_level bin/pw_notch \
+                              bin/pw_reverb
 
 step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
@@ -161,6 +162,16 @@ run python3 tests/live.py bin/pw_denoise -c 2 -n 0 \
     -- "latency" "latency 1440" "reduction 150" ERROR "gr 3" ERROR \
     --audio "1000" "1000=0+-0.3"
 
+# The reverb in the graph: at mix 0 the input passes untouched and no
+# latency is reported -- the predelay is the effect, as the delay's time is.
+# What the tail does (its decay at both ends of the band, its density, its
+# width, its glide) is measured offline, in tests/reverb.py: a tone's level
+# through a dense reverb is a draw from its modes, not a number to predict.
+run python3 tests/live.py bin/pw_reverb -c 2 -m 0 \
+    -- "decay 0" ERROR "predelay 300" ERROR "gr 3" ERROR \
+       "size 40" "size 40" "mix 0" "mix 0" "latency" "latency 0" \
+    --audio "200,1000,4000" "200=0+-0.3,1000=0+-0.3,4000=0+-0.3"
+
 # the delay measured against itself, so the graph's own timing drops out:
 # exact to the sample, reported as no latency, and no click on a time change
 run python3 tests/delay.py bin/pw_delay
@@ -179,7 +190,8 @@ step "4. filters composed into a chain"
 run python3 tests/chain.py
 
 step "5. parameters under load"
-for b in pw_lpf pw_hpf pw_eq pw_notch pw_gate pw_limit pw_gain pw_delay pw_deess pw_denoise; do
+for b in pw_lpf pw_hpf pw_eq pw_notch pw_gate pw_limit pw_gain pw_delay pw_deess pw_denoise \
+         pw_reverb; do
     run python3 tests/stress.py bin/$b -c 2
 done
 # The compressor is a gain stage: its output is the input times

@@ -1,9 +1,9 @@
 # pw_* — PipeWire filter nodes
 
-Thirteen audio filters, each a standalone PipeWire filter node built on
+Fourteen audio filters, each a standalone PipeWire filter node built on
 `pw_filter`. Six are ported from the raw stdin/stdout reference
-implementations in `reference/`; `pw_notch`, `pw_delay`, `pw_deess`,
-`pw_denoise` and `pw_level` were
+implementations in `reference/`; `pw_notch`, `pw_delay`, `pw_reverb`,
+`pw_deess`, `pw_denoise` and `pw_level` were
 written here together with references of their own -- `pw_denoise` around
 RNNoise, vendored in `third_party/rnnoise`; `pw_sccomp` is `pw_comp`'s core
 with an external key, and is held to `reference/comp.c` itself; `pw_gain` has
@@ -21,6 +21,7 @@ none, and is checked against arithmetic instead.
 | `pw_limit` | true-peak brickwall limiter | lookahead + 12 samples |
 | `pw_gain`  | gain, mute, polarity per side, balance; every change ramped | none |
 | `pw_delay` | delay up to 2 s, with feedback and mix for an echo | none reported (the delay is the effect) |
+| `pw_reverb` | algorithmic reverb: 16-channel diffuser into a 16-line feedback delay network, decay exact at both ends of the band, decorrelated channels | none reported (the predelay is the effect) |
 | `pw_deess` | de-esser: split-band dynamic EQ or wide, relative or absolute detection | lookahead |
 | `pw_denoise` | noise suppression for voice (RNNoise), limited reduction, optional voice gate; 48 kHz | 30 ms |
 | `pw_level` | loudness leveler: rides the gain up and down towards a target in LUFS (BS.1770), gated | lookahead (default none) |
@@ -351,6 +352,32 @@ The narrower and steeper a notch, the longer it rings, and a live change to
 `freq` on a very narrow one is heard as that ringing. 60 Hz where the mains
 is 60.
 
+## Reverb, by hand
+
+`pw_reverb` is a 16-channel diffuser feeding a 16-line feedback delay
+network. `decay` is the time the tail takes to fall 60 dB, and it holds
+whatever `size` is: size sets how far apart the echoes are and how soon
+they thicken, from a small room at 10 to a hall at 100. `hf-decay`
+shortens the top end's tail above `damp-freq`, as air and soft walls do.
+Each channel's tail comes out decorrelated from the others', so a mono
+voice gets a wide one. `modulation` moves the tank's line lengths slowly,
+up to 1 ms, which keeps a long tail from ringing metallic without dulling
+it.
+
+As a send, all wet, mixed back in by whatever follows; or inline, a room
+around a voice:
+
+```sh
+./bin/pw_reverb -c 2 -m 20 -d 1.2 -s 40 -p 15 -L 150 --node-name room &
+
+pw-link mic  room
+pw-link room speakers
+```
+
+`size`, `predelay` and `modulation` glide to a new value instead of
+jumping, heard as a short swoop in pitch: a jump would click, and in a
+reverb the click would ring for the whole decay.
+
 ## Levelling, by hand
 
 `pw_level` is the hand on the fader: it rides a quiet speaker up and a loud
@@ -456,6 +483,11 @@ tests/protocol.py  the stdin/stdout contract
 tests/gain.py      pw_gain per channel in the graph: each side's level and
                    polarity, and no clicks while switching any of it
 tests/impulse.py   pw_delay's impulse response against theory, offline
+tests/reverb.py    pw_reverb against acoustics, offline: RT60 by
+                   Schroeder integration at both ends of the band at every
+                   size, echo density against Gaussian noise's, the
+                   channels decorrelated, silence until the predelay, and a
+                   live change of size or predelay without a click
 tests/notch.py     pw_notch against its design, offline: the -3 dB edges
                    where q puts them, the Butterworth band-stop's shape at
                    every order, a null over 100 dB deep on every harmonic
