@@ -79,6 +79,14 @@ echo "leveler against BS.1770 and its design:"
 python3 tests/level.py
 fails=$((fails+$?))
 
+# The notch: the comparison proves core and reference agree, this that the
+# null sits on freq, the edges where q puts them, and the shape is the
+# Butterworth band-stop it says it is -- at three rates.
+echo
+echo "notch against its design:"
+python3 tests/notch.py
+fails=$((fails+$?))
+
 # The noise suppressor: the comparison proves the framing, this measures what
 # it is for -- on real speech, and that RNNoise's delay is what it assumes.
 echo

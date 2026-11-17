@@ -93,3 +93,18 @@ run_case level -r $RATE -c 1   -b 4096 -g -80 -w 1500 -k 2.7 -a 30000 -e 60000
 run_case level -r $RATE -c $CH -b 1    -l -20 -k 200 -a 300 -e 900
 run_case level -r $RATE -c $CH -b 480  -B 0 -C 0 -k 10
 run_case level -r $RATE -c $CH -b 200  -l 0 -B 30 -a 20 -e 20 -g -70
+
+# The notch: every order from the classic V up, odd orders' real section
+# included, a hum stack of harmonics, harmonics running past the top (left
+# out), a wide band (the root that would cancel), a needle-narrow one at
+# 50 Hz with its poles within 1e-5 of the unit circle, a centre near
+# Nyquist, and block sizes from 1 frame to 4096.
+for n in 1 2 3 4 8; do
+    run_case notch -r $RATE -c $CH -n $n -f 1000 -Q 10 -b 128
+done
+run_case notch -r $RATE -c $CH -b 97   -f 50 -Q 20 -n 2 -H 8
+run_case notch -r $RATE -c $CH -b 1024 -f 3000 -Q 5 -n 3 -H 16
+run_case notch -r $RATE -c $CH -b 256  -f 400 -Q 0.5 -n 4
+run_case notch -r $RATE -c 1   -b 4096 -f 50 -Q 300 -n 8 -H 4
+run_case notch -r $RATE -c $CH -b 1    -f 21000 -Q 30 -n 2
+run_case notch -r $RATE -c $CH -b 333  -f 60 -Q 10 -n 1 -H 16

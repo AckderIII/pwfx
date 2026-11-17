@@ -32,7 +32,7 @@ step "2. control protocol"
 run python3 tests/protocol.py bin/pw_lpf bin/pw_hpf bin/pw_eq \
                               bin/pw_gate bin/pw_comp bin/pw_limit bin/pw_gain \
                               bin/pw_delay bin/pw_deess bin/pw_denoise \
-                              bin/pw_sccomp bin/pw_level
+                              bin/pw_sccomp bin/pw_level bin/pw_notch
 
 step "3. live response in the graph"
 # 200 Hz and 8 kHz against a 4th-order Butterworth at 1 kHz: three octaves up
@@ -52,6 +52,18 @@ run python3 tests/live.py bin/pw_eq -c 2 --b3-freq 1000 --b3-q 2 --b3-gain 6 \
     -- "bells rbj" "bells rbj" "bells orfanidis" "bells orfanidis" \
        "bells nonsense" ERROR "hs-gain 20" "hs-gain 20" "hs-slope 6" ERROR \
     --audio "200,1000" "200=0+-0.8,1000=6+-0.4"
+
+# The notch in the graph: a 1 kHz null, q 10, order 2. Its -3 dB edges are
+# 100 Hz apart, so 200 Hz and 4 kHz -- over two octaves out -- pass at
+# 0 dB (theory: under 0.0001 dB of cut), and 1 kHz goes below anything the
+# recording can show. Then three harmonics: 2 and 3 kHz nulled as well,
+# 500 Hz and 4 kHz -- each over an octave from the nearest centre -- left be.
+run python3 tests/live.py bin/pw_notch -c 2 -f 1000 -Q 10 -n 2 \
+    -- "freq 30000" ERROR "q 0.1" ERROR "order 9" ERROR "gr 3" ERROR \
+       "harmonics 1" "harmonics 1" "order 2" "order 2" \
+    --audio "200,1000,4000" "200=0+-0.3,1000=-170+-70,4000=0+-0.3"
+run python3 tests/live.py bin/pw_notch -c 2 -f 1000 -Q 10 -n 2 -H 3 \
+    -- --audio "500,2000,3000,4000" "500=0+-0.3,2000=-170+-70,3000=-170+-70,4000=0+-0.3"
 
 # wide open: the gate passes the signal untouched, and reports its lookahead
 run python3 tests/live.py bin/pw_gate -c 2 -t -60 -k 5 \
@@ -167,7 +179,7 @@ step "4. filters composed into a chain"
 run python3 tests/chain.py
 
 step "5. parameters under load"
-for b in pw_lpf pw_hpf pw_eq pw_gate pw_limit pw_gain pw_delay pw_deess pw_denoise; do
+for b in pw_lpf pw_hpf pw_eq pw_notch pw_gate pw_limit pw_gain pw_delay pw_deess pw_denoise; do
     run python3 tests/stress.py bin/$b -c 2
 done
 # The compressor is a gain stage: its output is the input times

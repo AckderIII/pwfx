@@ -24,6 +24,11 @@ Every expectation is derived from first principles, not from the code:
                down, so the louder side's line is still y = x + gain.
   gate         rising, shut by the range until the threshold; falling, open
                down to threshold - hysteresis: a loop, in that order.
+  notch        a Butterworth band-stop on the warped axis W = tan(pi f/fs):
+               |H|^2 = 1 / (1 + (B W / (W0^2 - W^2))^(2n)), its edges
+               f0/q apart with tan(f1) tan(f2) = tan(f0)^2 (bisected here),
+               B = W2 - W1; with harmonics, the sum in dB at k f0 below
+               0.49 fs; and the curve reaches the floor at every centre.
   EQ           all gains 0 is exactly flat; a bell peaks at its gain; a
                shelf reaches its gain well past its corner.
 
@@ -148,6 +153,39 @@ for args, (T, s, B, C, G) in ((["-l", "-18"], (-18, 1.0, 12, 12, -50)),
     check(kind == "level" and err < 0.005 and min(x for x, _ in pts) == G,
           "pw_level %s: rides towards the target within its caps, from the gate up"
           % " ".join(args), "worst %.4f, from %g" % (err, min(x for x, _ in pts)))
+
+def notch_db(f, f0, q, n):
+    # the product rises with f1 while f2 stays under Nyquist, where tan wraps
+    k0 = math.tan(math.pi * f0 / RATE) ** 2
+    lo, hi = 0.0, min(f0, RATE / 2 - f0 / q)
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if math.tan(math.pi * mid / RATE) * math.tan(math.pi * (mid + f0 / q) / RATE) < k0:
+            lo = mid
+        else:
+            hi = mid
+    w, w0 = math.tan(math.pi * f / RATE), math.tan(math.pi * f0 / RATE)
+    B = math.tan(math.pi * (lo + f0 / q) / RATE) - math.tan(math.pi * lo / RATE)
+    if w == w0:
+        return -math.inf
+    return -10.0 * math.log10(1.0 + (B * w / (w0 * w0 - w * w)) ** (2 * n))
+
+
+for f0, q, n, H in ((1000, 10, 1, 1), (1000, 10, 4, 1), (50, 20, 2, 8), (3000, 2, 3, 16)):
+    kind, pts = curve("pw_notch", "-f", str(f0), "-Q", str(q), "-n", str(n), "-H", str(H))
+    centres = [f0 * k for k in range(1, H + 1) if f0 * k < RATE * 0.49]
+    want = lambda f: sum(notch_db(f, c, q, n) for c in centres)
+    # x is printed to 6 significant figures, which on a notch's flank is a
+    # visible step in dB: the curve has to sit between theory at the two
+    # ends of the interval its printed x stands for
+    def off(p):
+        a, b = want(p[0] * (1 - 5e-6)), want(p[0] * (1 + 5e-6))
+        return max(0.0, min(a, b) - p[1], p[1] - max(a, b))
+    err = max(off(p) for p in pts if want(p[0]) > -200)
+    floor = all(any(x == c and y <= -240 for x, y in pts) for c in centres if c <= pts[-1][0])
+    check(kind == "freq" and err <= 0.006 and floor,
+          "pw_notch f %g q %g order %d x%d: the band-stop response, the floor at each centre"
+          % (f0, q, n, H), "worst %.4f dB, floor %s" % (err, floor))
 
 kind, pts = curve("pw_gate", "-t", "-40", "-T", "6", "-g", "20")
 xs = [x for x, _ in pts]

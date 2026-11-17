@@ -1,9 +1,9 @@
 # pw_* — PipeWire filter nodes
 
-Twelve audio filters, each a standalone PipeWire filter node built on
+Thirteen audio filters, each a standalone PipeWire filter node built on
 `pw_filter`. Six are ported from the raw stdin/stdout reference
-implementations in `reference/`; `pw_delay`, `pw_deess`, `pw_denoise` and
-`pw_level` were
+implementations in `reference/`; `pw_notch`, `pw_delay`, `pw_deess`,
+`pw_denoise` and `pw_level` were
 written here together with references of their own -- `pw_denoise` around
 RNNoise, vendored in `third_party/rnnoise`; `pw_sccomp` is `pw_comp`'s core
 with an external key, and is held to `reference/comp.c` itself; `pw_gain` has
@@ -14,6 +14,7 @@ none, and is checked against arithmetic instead.
 | `pw_lpf`   | Butterworth low-pass, order 1..16 | none |
 | `pw_hpf`   | Butterworth high-pass, order 1..16 | none |
 | `pw_eq`    | 5-band parametric EQ: low shelf, three bells, high shelf | none |
+| `pw_notch` | notch: Butterworth band-stop, order 1..8, exact null and width, up to 16 harmonics for hum | none |
 | `pw_gate`  | noise gate with lookahead, hysteresis and hold | lookahead |
 | `pw_comp`  | compressor, log-domain detector, soft knee, lookahead | lookahead |
 | `pw_sccomp` | `pw_comp` keyed by a separate mono input, `sc_in`: ducking | lookahead |
@@ -220,9 +221,11 @@ One `name value` line like any other, sent only when asked for. The kind
 is the axes:
 
 - `freq`: `HZ:DB` pairs, log-spaced from 20 Hz to 20 kHz (or to just under
-  Nyquist), for `pw_lpf`, `pw_hpf` and `pw_eq`. The EQ's is the sum of the
-  bands that are on, so a band switched off by a rate change is missing
-  from the curve as it is from the sound.
+  Nyquist), for `pw_lpf`, `pw_hpf`, `pw_eq`, `pw_notch` and `pw_deess`.
+  The EQ's is the sum of the bands that are on, so a band switched off by a
+  rate change is missing from the curve as it is from the sound. The
+  notch's adds each notch's centre and edges to that grid, which a narrow
+  one would fall between, so it reaches the floor where the sound does.
 - `level`: `IN:OUT` pairs in dB, -90 to +6, the static curve of `pw_comp`
   (makeup included), `pw_gate` and `pw_limit` -- where a steady input ends
   up, not how fast it gets there.
@@ -325,6 +328,28 @@ Link port by port: a node-to-node `pw-link` decides by itself which input
 gets what. With nothing on `sc_in` the key is silence and the audio passes
 untouched (makeup aside). In the app, the stage card has a **sidechain**
 picker for this instead.
+
+## Hum, by hand
+
+`pw_notch` takes out one frequency and leaves the band around it alone.
+Its null is exactly on `freq` and its -3 dB edges exactly `freq/q` Hz
+apart, at any rate -- solved for in the digital domain, where the cookbook
+notch prewarps the centre and only approximates the width. `order` 1 is the
+classic notch, a V that starts cutting well outside its width; higher
+orders are a Butterworth band-stop, the same width at -3 dB with flat
+shoulders and a wider bottom. `harmonics` stacks notches at 2 f, 3 f, ...
+with the same q, which is what mains hum needs:
+
+```sh
+./bin/pw_notch -c 2 -f 50 -Q 20 -n 2 -H 6 --node-name dehum &
+
+pw-link mic   dehum
+pw-link dehum speakers
+```
+
+The narrower and steeper a notch, the longer it rings, and a live change to
+`freq` on a very narrow one is heard as that ringing. 60 Hz where the mains
+is 60.
 
 ## Levelling, by hand
 
@@ -431,6 +456,10 @@ tests/protocol.py  the stdin/stdout contract
 tests/gain.py      pw_gain per channel in the graph: each side's level and
                    polarity, and no clicks while switching any of it
 tests/impulse.py   pw_delay's impulse response against theory, offline
+tests/notch.py     pw_notch against its design, offline: the -3 dB edges
+                   where q puts them, the Butterworth band-stop's shape at
+                   every order, a null over 100 dB deep on every harmonic
+                   at three rates, and the narrowest settings stable
 tests/sccomp.py    pw_sccomp offline: byte for byte against reference/comp.c
                    on streams where the original hears exactly the key,
                    then the cut, release and lookahead against the design

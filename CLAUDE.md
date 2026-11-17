@@ -2,13 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Twelve audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_gate`, `pw_comp`,
-`pw_sccomp`, `pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`, `pw_denoise`,
-`pw_level`), each a standalone PipeWire filter node built on `pw_filter`;
-all but `pw_gain` with a raw stdin/stdout reference implementation in
-`reference/` behind them -- the first six ported from theirs, `pw_delay`,
-`pw_deess`, `pw_denoise` and `pw_level` written here together with their
-own, `pw_sccomp` held to
+Thirteen audio filters (`pw_lpf`, `pw_hpf`, `pw_eq`, `pw_notch`, `pw_gate`,
+`pw_comp`, `pw_sccomp`, `pw_limit`, `pw_gain`, `pw_delay`, `pw_deess`,
+`pw_denoise`, `pw_level`), each a standalone PipeWire filter node built on
+`pw_filter`; all but `pw_gain` with a raw stdin/stdout reference
+implementation in `reference/` behind them -- six ported from theirs,
+`pw_notch`, `pw_delay`, `pw_deess`, `pw_denoise` and `pw_level` written
+here together with their own, `pw_sccomp` held to
 `pw_comp`'s -- and `pw_gain` with none; plus
 `app/`, a Rust and Slint desktop app that drives them as plugins.
 
@@ -227,6 +227,22 @@ target. Its K-weighting is designed from the analogue prototypes for any
 rate, and the test checks it against the standard's published 48 kHz
 coefficients, not against the C.
 
+**`pw_notch`'s edges are solved for, not prewarped -- keep it that way.**
+The RBJ notch prewarps the centre and sets the width by an approximation
+that drifts as the centre climbs. Here the digital -3 dB edges f1, f2 are
+required to be exactly freq/q apart and to satisfy
+tan(pi f1/fs) tan(pi f2/fs) = tan(pi f0/fs)^2, which is a quadratic in
+tan(pi f1/fs) with a closed form; order N is then the Butterworth low-pass
+prototype through s -> B s/(s^2 + W0^2), every section's zeros on the unit
+circle at f0. Each prototype pole's two band-stop poles multiply to W0^2,
+so the larger is computed and the smaller divided out -- the quadratic
+formula's second root cancels on a wide band. `tests/notch.py` bisects the
+edges itself rather than trusting the closed form, and its bracket stops
+where f2 would pass Nyquist (tan wraps there; a wide top harmonic found
+it). `harmonics` keeps q, not the width in Hz, so each harmonic is as wide
+as it drifts. The curve adds each notch's centre and edges to the shared
+grid, which a narrow notch falls between.
+
 **Except `pw_delay`, which reports 0 on purpose.** Its delay is the effect, not
 processing it needs: reported, the graph would compensate it away, and lining
 one source up with another is the whole point of a plain delay. Do not "fix"
@@ -242,7 +258,7 @@ apart than one.
 same coefficients, same transposed direct form II, same double-precision state,
 same denormal flushing. `make test` proves it by running each filter's actual
 core through the reference's stream handling and `cmp`-ing against the reference
-binary — currently 75 cases (plus `tests/sccomp.py`'s twelve) across orders, block sizes, sidechain settings and
+binary — currently 86 cases (plus `tests/sccomp.py`'s twelve) across orders, block sizes, sidechain settings and
 edges, all byte-identical, plus four that drive the limiter hard into its
 ceiling and insist the breach count stays zero.
 
@@ -257,7 +273,10 @@ around the same code so the two streams line up. `pw_lpf`/`pw_hpf`/`pw_eq` have
 no delay line and use `src/dsp.h` directly. `pw_deess` is the de-esser's
 core in `deess_dsp.h`, absorbed in `tests/t_deess.c` like the gate's.
 `pw_level` likewise, in `level_dsp.h` and `tests/t_level.c`, whose `-v`
-prints the core's gain per block for `tests/level.py`. `pw_delay` keeps its core in
+prints the core's gain per block for `tests/level.py`. `pw_notch` keeps its
+core in `notch_dsp.h` but has no delay line, so `tests/t_notch.c` is
+`t_hpf.c`'s shape around it, and `tests/notch.py` checks what the two agree
+on against the design (see above). `pw_delay` keeps its core in
 `delay_dsp.h` too, but needs no absorbing: the delay is its output in the
 reference as well, and `tests/impulse.py` checks the impulse response the two
 agree on against theory.
@@ -355,7 +374,7 @@ it that way: an edit made around `edit` is an edit that cannot be undone.
 
 **The AppImage bundles nothing but the binaries** (`packaging/appimage/`). Every
 binary links only libc, libm, libgcc_s and libpipewire, and the GUI loads its
-display libraries at runtime, so the AppDir is the thirteen executables, a
+display libraries at runtime, so the AppDir is the fourteen executables, a
 `.desktop` file, an icon and RNNoise's licence, which its BSD terms ask for
 in binary distributions too. `libpipewire` must stay the host's: it loads its
 own modules from the host's paths. `inside.sh` fails the build if a binary
